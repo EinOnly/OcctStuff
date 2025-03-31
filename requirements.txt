@@ -1,0 +1,4 @@
+PyQt5>=5.15.0
+numpy>=1.19.0
+# PythonOCC core packages - install according to your platform
+# python-occ-core>=7.4.0
