@@ -1,0 +1,8 @@
+# Ingore Data
+data/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.stp
+*.STEP
