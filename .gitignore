@@ -1,5 +1,8 @@
 # Ingore Data
+.venv/
+.cache/
 data/
+extern/
 __pycache__/
 *.pyc
 *.pyo

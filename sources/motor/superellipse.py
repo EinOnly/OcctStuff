@@ -8,7 +8,7 @@ paths with caching for performance optimization.
 import math
 from typing import List, Tuple, Dict
 
-RADIUS_EPSILON = 1e-4
+RADIUS_EPSILON = 1e-12
 
 
 class Superellipse:
@@ -35,7 +35,7 @@ class Superellipse:
         # Max cache size to prevent memory leaks
         self.cache_size = 120
         # Decimal precision for coordinates
-        self.precision = 4
+        self.precision = 15
         # Pre-calculated quarter superellipse corner points
         self.corner = self._sample_quarter_superellipse(n=self.exponent, steps=self.steps)
     
@@ -94,7 +94,11 @@ class Superellipse:
                 math.pow(abs(cos_val), inv_n) + math.pow(abs(sin_val), inv_n),
                 neg_n_half
             )
-            points.append((rr * cos_val, rr * sin_val))
+            # Invert the curve to make it convex (bulge outward) instead of concave
+            # We flip the coordinates: (x, y) -> (1-y, 1-x) to get the outer curve
+            x = rr * cos_val
+            y = rr * sin_val
+            points.append((1.0 - y, 1.0 - x))
         
         # Manage cache size
         if len(self.cache) >= self.cache_size:
@@ -208,7 +212,7 @@ class Superellipse:
     def set_precision(precision: int):
         """Set decimal precision"""
         instance = Superellipse.get_instance()
-        instance.precision = max(0, min(6, precision))
+        instance.precision = max(0, min(15, precision))
     
     @staticmethod
     def get_precision() -> int:

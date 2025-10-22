@@ -1,0 +1,20 @@
+# 推理引擎（选一个）
+# Option 1: llama-cpp-python (推荐，跨平台)
+llama-cpp-python>=0.2.0
+
+# Option 2: MLX (Apple Silicon only, 最快)
+# mlx>=0.0.1
+# mlx-lm>=0.0.1
+
+# 训练和优化
+torch>=2.0.0
+peft>=0.7.0  # LoRA训练
+bitsandbytes>=0.41.0  # 量化
+
+# 可视化
+matplotlib>=3.7.0
+numpy>=1.24.0
+
+# 工具
+tqdm>=4.65.0
+psutil>=5.9.0  # 监控资源

@@ -1,31 +1,23 @@
-from OCC.Core.STEPControl import STEPControl_Reader
-from OCC.Core.IFSelect import IFSelect_RetDone
-from OCC.Display.SimpleGui import init_display
+import numpy as np
+import matplotlib.pyplot as plt
 
-def load_step_file(filename):
-    reader = STEPControl_Reader()
-    status = reader.ReadFile(filename)
+# 参数
+k = 3                   # 控制花瓣数量
+num_curves = 3       # 绘制多少条旋转的玫瑰曲线
+theta = np.linspace(0, 2 * np.pi, 1000)
 
-    if status != IFSelect_RetDone:
-        print("❌ 读取 STEP 文件失败:", filename)
-        return
+# 创建画布
+fig = plt.figure(figsize=(6, 6))
+ax = fig.add_subplot(111, polar=True)
+ax.set_rticks([])  # 去掉半径刻度
+ax.set_xticks([])  # 去掉角度刻度
+ax.grid(False)
 
-    # 加载到模型中
-    reader.TransferRoots()
-    shape = reader.OneShape()
-    return shape
+# 绘制多条相位旋转后的玫瑰曲线
+for i in range(num_curves):
+    phase = (2 * np.pi / num_curves) * i
+    r = np.abs(np.sin(k * theta + phase))  # abs 是为了更对称美观
+    ax.plot(theta, r, color='black', linewidth=1.5)
 
-def main():
-    filename = "/home/ein/Dev/OcctStuff/box.stp"  # 修改为你的 STEP 文件路径
-    shape = load_step_file(filename)
-    if not shape:
-        return
-
-    # 初始化可视化窗口
-    display, start_display, add_menu, add_function_to_menu = init_display()
-    display.DisplayShape(shape, update=True)
-    display.FitAll()
-    start_display()
-
-if __name__ == "__main__":
-    main()
+plt.tight_layout()
+plt.show()

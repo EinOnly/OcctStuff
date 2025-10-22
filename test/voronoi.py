@@ -1,81 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from scipy.spatial import Voronoi
+from scipy.spatial import Voronoi, voronoi_plot_2d
 from noise import pnoise3
 from scipy.interpolate import splprep, splev
 from matplotlib.path import Path
-
-from OCC.Core.gp import gp_Pnt, gp_Vec
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_MakeFace
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
-from OCC.Core.IFSelect import IFSelect_RetDone
-from OCC.Core.TopoDS import TopoDS_Compound
-from OCC.Core.BRep import BRep_Builder
-from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.GeomAPI import GeomAPI_PointsToBSpline
-from OCC.Core.GeomAbs import GeomAbs_C2
-
-def occ_make_extruded_shape_bspl(smooth_poly, height=10.0):
-    if not np.allclose(smooth_poly[0], smooth_poly[-1]):
-        smooth_poly = np.vstack([smooth_poly, smooth_poly[0]])
-
-    n = len(smooth_poly)
-    array = TColgp_Array1OfPnt(1, n)
-    for i in range(n):
-        x, y = smooth_poly[i]
-        array.SetValue(i + 1, gp_Pnt(x, y, 0))
-
-    # ✅ 构造闭合 B 样条曲线
-    bspline_builder = GeomAPI_PointsToBSpline(array, 3, 8, GeomAbs_C2, 1e-6)
-    bspline = bspline_builder.Curve()
-
-    # ✅ 创建边、线框、面并挤出
-    edge = BRepBuilderAPI_MakeEdge(bspline).Edge()
-    wire = BRepBuilderAPI_MakeWire(edge).Wire()
-    face = BRepBuilderAPI_MakeFace(wire).Face()
-    vec = gp_Vec(0, 0, height)
-    return BRepPrimAPI_MakePrism(face, vec).Shape()
-
-def occ_make_extruded_shape_bspl_closed(smooth_poly, height=10.0):
-    # ✅ 只参考点，不管首尾是否相连，直接构造闭合曲线
-    n = len(smooth_poly)
-    array = TColgp_Array1OfPnt(1, n)
-    for i in range(n):
-        x, y = smooth_poly[i]
-        array.SetValue(i + 1, gp_Pnt(x, y, 0))
-
-    # ✅ 构造 B 样条，设置为闭合（periodic），不严格插值
-    bspline_builder = GeomAPI_PointsToBSpline(array, 3, 8, GeomAbs_C2, 1e-2)
-    bspline = bspline_builder.Curve()
-
-    # 强制设置为周期性闭合
-    if not bspline.IsClosed() or not bspline.IsPeriodic():
-        bspline.SetPeriodic()
-
-    # ✅ 构造挤出体
-    edge = BRepBuilderAPI_MakeEdge(bspline).Edge()
-    wire = BRepBuilderAPI_MakeWire(edge).Wire()
-    if not BRepBuilderAPI_MakeFace(wire).IsDone():
-        print("❌ Failed to make face from wire.")
-        return None
-
-    face = BRepBuilderAPI_MakeFace(wire).Face()
-    shape = BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, height)).Shape()
-    return shape
-
-
-# 导出 STEP 文件
-def export_to_step(shape, filename="voronoi_cell.stp"):
-    writer = STEPControl_Writer()
-    writer.Transfer(shape, STEPControl_AsIs)
-    status = writer.Write(filename)
-    if status == IFSelect_RetDone:
-        print(f"✅ STEP file saved to {filename}")
-    else:
-        print("❌ Failed to write STEP file.")
-
 
 def generate_perlin_density(t, res, scale=10.0):
     density = np.zeros((res, res))
@@ -167,6 +96,35 @@ def shrink_polygon(points, factor=0.85):
     shrunk = center + (points - center) * factor
     return shrunk
 
+# generate points that are close to regular polygons
+def generate_uniform_grid_points(num_points, bounds, aspect_ratio=1.0):
+    """
+    Generate a uniform grid of points with adjustable x/y spacing ratio.
+    
+    Parameters:
+    - num_points: total number of points (approximate)
+    - bounds: [xmin, xmax, ymin, ymax]
+    - aspect_ratio: x_spacing / y_spacing (e.g., 2.0 means x-spacing is 2× y-spacing)
+    """
+    xmin, xmax, ymin, ymax = bounds
+    width = xmax - xmin
+    height = ymax - ymin
+
+    # Adjust grid shape based on aspect ratio
+    area = width * height
+    adjusted_height = np.sqrt(area / (num_points * aspect_ratio))
+    adjusted_width = adjusted_height * aspect_ratio
+
+    grid_cols = int(width / adjusted_width)
+    grid_rows = int(height / adjusted_height)
+
+    # Generate grid coordinates
+    x = np.linspace(xmin, xmax, grid_cols)
+    y = np.linspace(ymin, ymax, grid_rows)
+    xv, yv = np.meshgrid(x, y)
+
+    return np.column_stack((xv.ravel(), yv.ravel()))
+
 def main():
     # 参数配置
     num_points = 600
@@ -213,12 +171,14 @@ def main():
 
         # 📌 点移动
         points = move_points_by_density(points, density, bounds, res, dt)
+        # points = generate_uniform_grid_points(num_points, bounds, 1.0)
 
         # 📌 Voronoi 构造与质心
         relaxed_points, vor, centroids = relaxed_voronoi(points, bounds, num_relaxations)
+        voronoi_plot_2d(vor, ax=ax, show_vertices=False, line_colors='black', line_width=0.8, point_size=1.5)
 
         # 📌 绘制细胞中心点
-        if centroids:
+        if False and centroids:
             centroids = np.array(centroids)
             ax.scatter(centroids[:, 0], centroids[:, 1], color='blue', s=5, zorder=5)
 
@@ -235,7 +195,10 @@ def main():
                 norm = np.sqrt(gx ** 2 + gy ** 2) + 1e-8
                 dx = gx / norm * 3.0
                 dy = gy / norm * 3.0
-                ax.arrow(cx, cy, dx, dy, head_width=1.0, head_length=1.5, fc='red', ec='red', linewidth=0.8)
+                ax.arrow(cx, cy, dx, dy, head_width=0.6, head_length=0.5, fc='red', ec='red', linewidth=0.8)
+
+            # Render original points before relaxation
+            ax.scatter(points[:, 0], points[:, 1], color='green', s=3, alpha=0.7, zorder=4)
 
         # 📌 绘制 Voronoi 区域轮廓和平滑边界
         if vor:
@@ -250,12 +213,12 @@ def main():
                     continue
 
                 # 原始边界绘制（浅线）
-                ax.fill(*zip(*poly), edgecolor='black', facecolor='none', linewidth=0.1)
+                # ax.fill(*zip(*poly), edgecolor='black', facecolor='none', linewidth=0.1)
 
                 # 📌 平滑 + 收缩
                 poly = np.vstack([poly, poly[0]])  # 闭合
                 smooth_poly = chaikin_smoothing(poly, iterations=4)
-                smooth_poly = shrink_polygon(smooth_poly, factor=0.7)
+                smooth_poly = shrink_polygon(smooth_poly, factor=0.9)
 
                 # 📌 额外：沿密度梯度方向的垂直方向压缩 smooth_poly
                 center = smooth_poly.mean(axis=0)
@@ -282,75 +245,6 @@ def main():
                 path = Path(poly)
                 if np.all(path.contains_points(smooth_poly)):
                     ax.plot(smooth_poly[:, 0], smooth_poly[:, 1], color='black', linewidth=0.8)
-
-                    # ✅ 第 1 帧导出一个 Voronoi cell
-                    compound = TopoDS_Compound()
-                    builder = BRep_Builder()
-                    builder.MakeCompound(compound)
-
-                from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
-                from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
-
-                if frame == 1:
-                    height = 10.0
-                    num_saved = 0
-                    cell_shapes = []
-
-                    for region_idx in vor.point_region:
-                        region = vor.regions[region_idx]
-                        if -1 in region or len(region) == 0:
-                            continue
-
-                        polygon = [vor.vertices[i] for i in region]
-                        poly = np.array(polygon)
-                        if len(poly) < 3:
-                            continue
-
-                        poly = np.vstack([poly, poly[0]])  # 闭合
-                        smooth_poly = chaikin_smoothing(poly, iterations=4)
-                        smooth_poly = shrink_polygon(smooth_poly, factor=0.7)
-
-                        center = smooth_poly.mean(axis=0)
-                        xi = int((center[0] - xmin) / (xmax - xmin) * (w - 1))
-                        yi = int((center[1] - ymin) / (ymax - ymin) * (h - 1))
-                        xi = np.clip(xi, 0, w - 1)
-                        yi = np.clip(yi, 0, h - 1)
-                        gx = grad_x[yi, xi]
-                        gy = grad_y[yi, xi]
-                        norm = np.sqrt(gx**2 + gy**2) + 1e-8
-                        gx /= norm
-                        gy /= norm
-                        nx, ny = -gy, gx
-                        squash_factor = 0.7
-                        for i in range(len(smooth_poly)):
-                            v = smooth_poly[i] - center
-                            d = v[0] * nx + v[1] * ny
-                            offset = np.array([nx, ny]) * d * (1 - squash_factor)
-                            smooth_poly[i] -= offset
-
-                        path = Path(poly)
-                        if np.all(path.contains_points(smooth_poly)):
-                            shape = occ_make_extruded_shape_bspl_closed(smooth_poly, height=height)
-                            if shape:
-                                cell_shapes.append(shape)
-                                num_saved += 1
-
-                    # ✅ 创建上下两个面板
-                    panel_thickness = 2.0
-                    panel_bottom = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(100, 100, panel_thickness)).Shape()
-                    panel_top    = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, height), gp_Pnt(100, 100, height + panel_thickness)).Shape()
-
-                    # # ✅ 把所有 cell 和底部面板融合
-                    # fused_bottom = panel_bottom
-                    # for shape in cell_shapes:
-                    #     fused_bottom = BRepAlgoAPI_Fuse(fused_bottom, shape).Shape()
-
-                    # # ✅ 再将顶部也融合（与同样的柱体）
-                    # fused_full = BRepAlgoAPI_Fuse(fused_bottom, panel_top).Shape()
-
-                    # ✅ 导出整体结构
-                    export_to_step(panel_bottom, filename="box.stp")
-                    print(f"✅ 导出整体结构，共包含 {num_saved} 个 Voronoi 柱体与上下面板融合")
                 else:
                     ax.plot(poly[:, 0], poly[:, 1], color='gray', linewidth=0.5)
                     
