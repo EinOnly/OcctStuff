@@ -12,12 +12,13 @@ def main():
     - Visualizer: Handles PyQt5 UI and visualization
     - main.py: Integration and application entry point
     """
-    print("Motor Pattern Drawing Application")
-    print("=" * 40)
+    print("Motor Pattern Drawing Application with 3D OCCT Viewer")
+    print("=" * 50)
     print("Starting Interactive Motor Pattern Visualizer...")
     print("Architecture:")
     print("- pattern.py: Pattern parameters and calculations")
     print("- visualizer.py: PyQt5 visualization and UI")
+    print("- step.py: OCCT 3D shape generation and STEP export")
     print("- main.py: Integration and application entry point")
     print()
     print("Use the sliders to adjust parameters:")
@@ -28,10 +29,20 @@ def main():
     print("- exponent: Superellipse corner exponent")
     print()
     print("UI Layout:")
-    print("- Left: Input controls (sliders)")
-    print("- Center: Pattern window")
-    print("- Right: Assembly window")
-    print("=" * 40)
+    print("Row 1:")
+    print("  - Left: Input controls (sliders)")
+    print("  - Center-Left: 2D Pattern window")
+    print("  - Center-Right: Chart window")
+    print("  - Right: Assembly window")
+    print("Row 2:")
+    print("  - Left: 3D Model controls")
+    print("  - Right: OCCT 3D Viewer")
+    print()
+    print("3D Features:")
+    print("- Auto-updates when pattern changes")
+    print("- Export to STEP file (0.047mm thickness)")
+    print("- Interactive 3D viewing with mouse")
+    print("=" * 50)
     
     # Create Qt application
     app = QApplication.instance()
@@ -39,7 +50,7 @@ def main():
         app = QApplication(sys.argv)
     
     # Create pattern and visualizer
-    pattern = Pattern(width=5.89, height=7.5)
+    pattern = Pattern(width=4.702, height=7.5)
     visualizer = Visualizer(pattern=pattern, height=300, multiple=2.5, spacing=10)
     
     # Show the interactive application

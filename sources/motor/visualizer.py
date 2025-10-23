@@ -1,12 +1,18 @@
 import math
 from pattern import Pattern
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication)
+from step import StepExporter
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication, QPushButton, QFileDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+# OCCT Display
+from OCC.Display.backend import load_backend
+load_backend('pyqt5')
+from OCC.Display.qtDisplay import qtViewer3d
 
 class Slider(QWidget):
     """A slider widget with label, slider, and input box for low-latency async updates"""
@@ -210,13 +216,21 @@ class Visualizer(QWidget):
         self.sliders = []
         self.slider_map = {}
         
+        # OCCT Step exporter
+        self.step_exporter = StepExporter(thickness=0.047)
+        
         # Initialize the main window
         self.setWindowTitle("Motor Pattern Visualizer")
         
-        # Create main horizontal layout
-        main_layout = QHBoxLayout()
+        # Create main vertical layout (for three rows)
+        main_layout = QVBoxLayout()
         main_layout.setSpacing(spacing)
-        main_layout.setContentsMargins(0, 10, 0, 10)
+        main_layout.setContentsMargins(spacing, spacing, spacing, spacing)
+        
+        # First row: Input + Pattern + Chart
+        first_row_layout = QHBoxLayout()
+        first_row_layout.setSpacing(spacing)
+        first_row_layout.setContentsMargins(0, 0, 0, 0)
         
         # Create three windows (QWidgets)
         self.windowInput = QWidget()
@@ -275,6 +289,9 @@ class Visualizer(QWidget):
         self.assembly_offset = self.thick + 0.05  # Auto add 0.05
         self.assembly_count = 18
         
+        # Twist mode - flip bottom half horizontally at pattern height center
+        self.twist_enabled = False
+        
         # Cache for chart data
         self.chart_needs_update = True
         
@@ -284,19 +301,111 @@ class Visualizer(QWidget):
         self._build_input_panel()
         self._build_slider_panel()
         
-        # Add windows to main layout
-        main_layout.addWidget(self.windowInput)
-        main_layout.addWidget(self.windowPattern)
-        main_layout.addWidget(self.windowChart)
-        main_layout.addWidget(self.windowAssamble)
+        # Add windows to first row layout (Input + Pattern + Chart)
+        first_row_layout.addWidget(self.windowInput)
+        first_row_layout.addWidget(self.windowPattern)
+        first_row_layout.addWidget(self.windowChart)
+        
+        # Second row: Assembly (full width, showing multiple patterns)
+        second_row_layout = QHBoxLayout()
+        second_row_layout.setSpacing(spacing)
+        second_row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Adjust assembly to full width (3 windows + 2 spacings)
+        assembly_full_width = height * 3 + spacing * 2
+        self.windowAssamble.setMinimumSize(assembly_full_width, height)
+        self.windowAssamble.setMaximumSize(assembly_full_width, height)
+        self.assembly_canvas.setMinimumSize(assembly_full_width, height)
+        self.assembly_canvas.setMaximumSize(assembly_full_width, height)
+        
+        second_row_layout.addWidget(self.windowAssamble)
+        
+        # Third row: 3D OCCT viewer (full width)
+        third_row_layout = QHBoxLayout()
+        third_row_layout.setSpacing(spacing)
+        third_row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create 3D viewer widget (full width, same as assembly)
+        self.viewer3d = qtViewer3d()
+        self.viewer3d.setMinimumSize(assembly_full_width, height)
+        
+        # Add 3D viewer to third row (full width)
+        third_row_layout.addWidget(self.viewer3d)
+        
+        # Add all three rows to main layout
+        main_layout.addLayout(first_row_layout)
+        main_layout.addLayout(second_row_layout)
+        main_layout.addLayout(third_row_layout)
         
         self.setLayout(main_layout)
         
-        # Adjust window size (now with 4 windows)
-        total_width = height * 3 + assembly_width + spacing * 5
-        self.setMinimumSize(total_width, height)
+        # Adjust window size (three rows now)
+        # Width: 3 windows + 2 spacings between them + 2 spacings for margins
+        total_width = height * 3 + spacing * 4
+        # Height: 3 rows + 2 spacings between them + 2 spacings for margins
+        total_height = height * 3 + spacing * 4
+        self.setMinimumSize(total_width, total_height)
+        
+        # Enable keyboard focus for 3D viewer
+        self.setFocusPolicy(Qt.StrongFocus)
         
         # Don't draw here - wait until window is shown
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts for 3D view control"""
+        key = event.key()
+        
+        # View switching: 1=Top, 2=Front, 3=Side
+        if key == Qt.Key_1:
+            # Top view (looking down Z axis)
+            self.viewer3d._display.View_Top()
+            print("View: Top (Z-axis)")
+        elif key == Qt.Key_2:
+            # Front view (looking along Y axis)
+            self.viewer3d._display.View_Front()
+            print("View: Front (Y-axis)")
+        elif key == Qt.Key_3:
+            # Side view (looking along X axis)
+            self.viewer3d._display.View_Right()
+            print("View: Side (X-axis)")
+        
+        # Pan controls with arrow keys
+        elif key == Qt.Key_Left:
+            self.viewer3d._display.Pan(-50, 0)
+            print("Pan: Left")
+        elif key == Qt.Key_Right:
+            self.viewer3d._display.Pan(50, 0)
+            print("Pan: Right")
+        elif key == Qt.Key_Up:
+            self.viewer3d._display.Pan(0, 50)
+            print("Pan: Up")
+        elif key == Qt.Key_Down:
+            self.viewer3d._display.Pan(0, -50)
+            print("Pan: Down")
+        
+        # Zoom controls
+        elif key == Qt.Key_Plus or key == Qt.Key_Equal:
+            # Zoom in
+            self.viewer3d._display.ZoomFactor(1.2)
+            print("Zoom: In")
+        elif key == Qt.Key_Minus or key == Qt.Key_Underscore:
+            # Zoom out
+            self.viewer3d._display.ZoomFactor(0.8)
+            print("Zoom: Out")
+        
+        # R = Reset view (fit all)
+        elif key == Qt.Key_R:
+            self.viewer3d._display.FitAll()
+            print("View: Reset (Fit All)")
+        
+        # I = Isometric view
+        elif key == Qt.Key_I:
+            self.viewer3d._display.View_Iso()
+            print("View: Isometric")
+        
+        else:
+            # Pass other keys to parent
+            super().keyPressEvent(event)
     
     def _build_input_panel(self):
         """Build input boxes for width, height, and thick parameters."""
@@ -381,16 +490,18 @@ class Visualizer(QWidget):
         thick_layout.addWidget(self.thick_input, 1)  # Stretch factor 1
         panel_layout.addLayout(thick_layout)
         
-        # Calculate button
-        from PyQt5.QtWidgets import QPushButton
-        self.calc_button = QPushButton("Calculate Resistance")
+        # All buttons in a horizontal layout (3 columns)
+        button_row = QHBoxLayout()
+        button_row.setSpacing(3)
+        
+        self.calc_button = QPushButton("Calc")
         self.calc_button.setStyleSheet("""
             QPushButton {
                 background-color: #4a90e2;
                 color: white;
                 border: none;
-                padding: 6px;
-                font-size: 10px;
+                padding: 8px 4px;
+                font-size: 9px;
                 font-weight: bold;
                 border-radius: 3px;
             }
@@ -402,7 +513,77 @@ class Visualizer(QWidget):
             }
         """)
         self.calc_button.clicked.connect(self._on_calculate_clicked)
-        panel_layout.addWidget(self.calc_button)
+        button_row.addWidget(self.calc_button)
+        
+        self.update_3d_button = QPushButton("3D")
+        self.update_3d_button.setStyleSheet("""
+            QPushButton {
+                background-color: #5cb85c;
+                color: white;
+                border: none;
+                padding: 8px 4px;
+                font-size: 9px;
+                font-weight: bold;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #4cae4c;
+            }
+            QPushButton:pressed {
+                background-color: #449d44;
+            }
+        """)
+        self.update_3d_button.clicked.connect(self._on_update_3d_clicked)
+        button_row.addWidget(self.update_3d_button)
+        
+        self.save_step_button = QPushButton("STEP")
+        self.save_step_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f0ad4e;
+                color: white;
+                border: none;
+                padding: 8px 4px;
+                font-size: 9px;
+                font-weight: bold;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #ec971f;
+            }
+            QPushButton:pressed {
+                background-color: #d58512;
+            }
+        """)
+        self.save_step_button.clicked.connect(self._on_save_step_clicked)
+        button_row.addWidget(self.save_step_button)
+        
+        # Twist button in the same row
+        self.twist_button = QPushButton("Twist")
+        self.twist_button.setCheckable(True)
+        self.twist_button.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                border: none;
+                padding: 8px 4px;
+                font-size: 9px;
+                font-weight: bold;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:checked {
+                background-color: #28a745;
+            }
+            QPushButton:checked:hover {
+                background-color: #218838;
+            }
+        """)
+        self.twist_button.clicked.connect(self._on_twist_clicked)
+        button_row.addWidget(self.twist_button)
+        
+        panel_layout.addLayout(button_row)
         
         input_panel.setLayout(panel_layout)
         self.input_layout.addWidget(input_panel)
@@ -450,6 +631,85 @@ class Visualizer(QWidget):
         self.chart_needs_update = True
         self._update_views()
     
+    def _on_twist_clicked(self):
+        """Toggle twist mode - flips bottom half of shape horizontally at pattern height center."""
+        self.twist_enabled = self.twist_button.isChecked()
+        print(f"Twist mode: {'ON' if self.twist_enabled else 'OFF'}")
+        
+        # Update all views
+        self._update_views_without_chart()
+    
+    def _apply_twist_to_shape(self, shape_curve):
+        """Apply twist transformation - cut at height/2, rotate upper half 180° around (width/2, height/2).
+        
+        Process:
+        1. Cut the shape at y = height/2
+        2. Keep only upper half (y >= height/2)
+        3. Rotate upper half 180° around point (width/2, height/2)
+        4. Combine original upper half + rotated copy to form new closed curve
+        
+        Args:
+            shape_curve: List of (x, y) points forming a closed curve
+            
+        Returns:
+            Transformed curve with upper half and its 180° rotation
+        """
+        if not self.twist_enabled or not shape_curve:
+            return shape_curve
+        
+        # Twist center: (width/2, height/2)
+        y_center = self.pattern.height / 2.0
+        x_center = self.thick / 2.0
+        EPSILON = 1e-9
+
+        def add_unique(points, point):
+            if not points:
+                points.append(point)
+                return
+            last_x, last_y = points[-1]
+            if abs(last_x - point[0]) > EPSILON or abs(last_y - point[1]) > EPSILON:
+                points.append(point)
+        
+        # Walk the original curve once and collect the ordered upper-half points (y >= y_center),
+        # inserting exact intersection points whenever a segment crosses the twist line. This
+        # preserves the traversal order from left to right along the top of the shape.
+        num_points = len(shape_curve)
+        upper_half = []
+        for idx in range(num_points):
+            x1, y1 = shape_curve[idx]
+            x2, y2 = shape_curve[(idx + 1) % num_points]
+
+            if y1 >= y_center:
+                add_unique(upper_half, (x1, y1))
+
+            delta1 = y1 - y_center
+            delta2 = y2 - y_center
+            if delta1 * delta2 < 0.0:
+                t = (y_center - y1) / (y2 - y1)
+                x_cross = x1 + t * (x2 - x1)
+                add_unique(upper_half, (round(x_cross, 15), round(y_center, 15)))
+        
+        if len(upper_half) < 2:
+            return shape_curve
+        
+        # Rotate upper half 180° around (x_center, y_center)
+        # 180° rotation formula: (x', y') = (2*cx - x, 2*cy - y)
+        rotated_half = [
+            (round(2 * x_center - x, 15), round(2 * y_center - y, 15))
+            for x, y in upper_half
+        ]
+        
+        twisted_curve = list(upper_half)
+        for point in rotated_half:
+            add_unique(twisted_curve, point)
+
+        first_x, first_y = twisted_curve[0]
+        last_x, last_y = twisted_curve[-1]
+        if abs(first_x - last_x) > EPSILON or abs(first_y - last_y) > EPSILON:
+            twisted_curve.append((first_x, first_y))
+
+        return twisted_curve
+    
     def _rebuild_ui(self):
         """Rebuild UI after dimension changes (with full chart update)."""
         # Update input boxes
@@ -476,6 +736,85 @@ class Visualizer(QWidget):
         
         # Redraw views without chart
         self._update_views_without_chart()
+    
+    def _on_update_3d_clicked(self):
+        """Update the 3D model in the viewer."""
+        try:
+            # Just call the unified update method
+            self._update_3d_model()
+            
+            # Print info to console
+            area = self.pattern.GetShapeArea(self.assembly_offset, 0.1)
+            print(f"3D Model updated - Array count: {int(self.assembly_count)}, Thickness: 0.047mm, Offset: {self.assembly_offset:.3f}mm, Area: {area:.3f}mm²")
+            
+        except Exception as e:
+            print(f"Error updating 3D model: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_save_step_clicked(self):
+        """Save all array patterns to STEP file."""
+        try:
+            # Use same offset logic as 3D model
+            offset = self.assembly_offset
+            
+            # Get closed shape from pattern using GetShape()
+            closed_curve = self.pattern.GetShape(offset=offset, space=0.05)
+            
+            if not closed_curve or len(closed_curve) < 3:
+                print("No valid shape to save")
+                return
+            
+            # Apply twist transformation if enabled
+            closed_curve = self._apply_twist_to_shape(closed_curve)
+            
+            # Create all shapes (same as 3D display)
+            thickness = self.step_exporter.thickness
+            center_x = self.pattern.width / 2.0
+            all_shapes = []
+            
+            for i in range(int(self.assembly_count)):
+                # Horizontal offset
+                x_offset = i * offset
+                
+                # Left shape - upper layer (z = thickness)
+                translated_curve = [(p[0] + x_offset, p[1]) for p in closed_curve]
+                shape_left = self.step_exporter.create_shape_from_curve(translated_curve, z_offset=thickness)
+                all_shapes.append(shape_left)
+                
+                # Right shape (mirrored) - lower layer (z = 0)
+                mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
+                translated_mirrored_curve = [(p[0] + x_offset, p[1]) for p in mirrored_curve]
+                shape_right = self.step_exporter.create_shape_from_curve(translated_mirrored_curve, z_offset=0.0)
+                all_shapes.append(shape_right)
+            
+            # Open file dialog
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save STEP File",
+                "motor_pattern_array.step",
+                "STEP Files (*.step *.stp);;All Files (*)"
+            )
+            
+            if filename:
+                # Save all shapes as compound
+                from OCC.Core.BRep import BRep_Builder
+                from OCC.Core.TopoDS import TopoDS_Compound
+                
+                compound = TopoDS_Compound()
+                builder = BRep_Builder()
+                builder.MakeCompound(compound)
+                
+                for shape in all_shapes:
+                    builder.Add(compound, shape)
+                
+                self.step_exporter.save_step(filename, shape=compound)
+                print(f"Saved STEP file: {filename} (array with {len(all_shapes)} shapes)")
+                
+        except Exception as e:
+            print(f"Error saving STEP file: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _build_slider_panel(self):
         """Rebuild parameter sliders according to current pattern mode (excluding width and height)."""
@@ -549,7 +888,7 @@ class Visualizer(QWidget):
         elif label == 'count':
             self.assembly_count = int(value)
         
-        # Only redraw assembly, no need to update pattern
+        # Only redraw assembly, don't auto-update 3D
         self._draw_assembly()
     
     def _update_slider_ranges(self):
@@ -594,11 +933,57 @@ class Visualizer(QWidget):
             self._draw_chart()
             self.chart_needs_update = False
         self._draw_assembly()
+        # Don't auto-update 3D model - only update when 3D button is clicked
     
     def _update_views_without_chart(self):
         """Update only pattern and assembly visualizations (skip expensive chart calculation)"""
         self._draw_pattern()
         self._draw_assembly()
+        # Don't auto-update 3D model - only update when 3D button is clicked
+    
+    def _update_3d_model(self):
+        """Update the 3D model in the viewer when pattern changes."""
+        try:
+            # Clear previous display
+            self.viewer3d._display.EraseAll()
+            
+            # Use same offset logic as _draw_assembly
+            offset = self.assembly_offset
+            
+            # Get closed shape from pattern using GetShape() - same as assembly
+            closed_curve = self.pattern.GetShape(offset=offset, space=0.05)
+            
+            if not closed_curve or len(closed_curve) < 3:
+                return
+            
+            # Apply twist transformation if enabled
+            closed_curve = self._apply_twist_to_shape(closed_curve)
+            
+            # Create shapes with array pattern - alternating Z offset
+            thickness = self.step_exporter.thickness
+            center_x = self.pattern.width / 2.0
+            
+            for i in range(int(self.assembly_count)):
+                # Horizontal offset - use offset variable (same as assembly)
+                x_offset = i * offset
+                
+                # Left shape - all at upper layer (z = thickness)
+                translated_curve = [(p[0] + x_offset, p[1]) for p in closed_curve]
+                shape_left = self.step_exporter.create_shape_from_curve(translated_curve, z_offset=thickness)
+                self.viewer3d._display.DisplayShape(shape_left, update=False, color='BLUE', transparency=0.2)
+                
+                # Right shape (mirrored) - all at lower layer (z = 0)
+                mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
+                translated_mirrored_curve = [(p[0] + x_offset, p[1]) for p in mirrored_curve]
+                shape_right = self.step_exporter.create_shape_from_curve(translated_mirrored_curve, z_offset=0.0)
+                self.viewer3d._display.DisplayShape(shape_right, update=False, color='CYAN', transparency=0.3)
+            
+            # Fit all shapes in view
+            self.viewer3d._display.FitAll()
+            self.viewer3d._display.Repaint()
+            
+        except Exception as e:
+            print(f"Error updating 3D model: {e}")
     
     def _draw_segments(self, ax, segments, color, linewidth=1, alpha=1.0, x_offset=0):
         """Helper function to draw line segments
@@ -651,6 +1036,8 @@ class Visualizer(QWidget):
         # Draw the closed shape if available
         if 'shape' in segments and segments['shape']:
             shape = segments['shape']
+            # Apply twist transformation if enabled
+            shape = self._apply_twist_to_shape(shape)
             xs = [p[0] for p in shape]
             ys = [p[1] for p in shape]
             # Fill the shape with light color
@@ -709,6 +1096,9 @@ class Visualizer(QWidget):
         
         if not shape:
             return
+        
+        # Apply twist transformation if enabled
+        shape = self._apply_twist_to_shape(shape)
         
         # Set transparency for overlapping visualization
         base_alpha = 0.5

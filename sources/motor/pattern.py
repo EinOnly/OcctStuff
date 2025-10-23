@@ -371,10 +371,13 @@ class Pattern:
 
         center_x = self.width / 2.0
         max_y = self.height
+        min_y = 0.0
 
+        # Offset curve
         curve_b = [(x + offset, y) for x, y in curve_left]
 
-        pcl: List[Tuple[float, float]] = []
+        # Calculate inset curve (right boundary)
+        pcl_raw: List[Tuple[float, float]] = []
         for i in range(len(curve_b)):
             if i == 0:
                 dx = curve_b[i + 1][0] - curve_b[i][0]
@@ -397,17 +400,91 @@ class Pattern:
 
             pcl_x = curve_b[i][0] + nx * space
             pcl_y = curve_b[i][1] + ny * space
+            pcl_raw.append((pcl_x, pcl_y))
 
-            pcl_x = min(pcl_x, center_x)
-            pcl_y = self._clamp(pcl_y, 0.0, max_y)
+        # Clip the inset curve to valid region (x <= center_x, 0 <= y <= max_y)
+        pcl_clipped: List[Tuple[float, float]] = []
+        
+        for i in range(len(pcl_raw)):
+            x1, y1 = pcl_raw[i]
+            x2, y2 = pcl_raw[(i + 1) % len(pcl_raw)]
+            
+            # Check if segment needs clipping
+            seg_points = self._clip_segment(x1, y1, x2, y2, center_x, min_y, max_y)
+            
+            # Add clipped segment points (avoid duplicates)
+            for pt in seg_points:
+                if not pcl_clipped or not self._points_close(pcl_clipped[-1], pt):
+                    pcl_clipped.append(self._fmt_point(pt[0], pt[1]))
+        
+        if not pcl_clipped:
+            # If all points clipped out, fallback to simple shape
+            pcl_clipped = [self._fmt_point(center_x, min_y), 
+                          self._fmt_point(center_x, max_y)]
 
-            pcl.append(self._fmt_point(pcl_x, pcl_y))
-
+        # Build closed shape: left curve + reversed clipped right boundary
         closed_shape = list(curve_left)
-        closed_shape.extend(reversed(pcl))
-        closed_shape.append(curve_left[0])
+        closed_shape.extend(reversed(pcl_clipped))
+        
+        # Close the shape if needed
+        if not self._points_close(closed_shape[-1], closed_shape[0]):
+            closed_shape.append(curve_left[0])
 
         return closed_shape
+    
+    def _clip_segment(self, x1: float, y1: float, x2: float, y2: float,
+                      max_x: float, min_y: float, max_y: float) -> List[Tuple[float, float]]:
+        """
+        Clip a line segment to the bounding box [0, max_x] × [min_y, max_y].
+        Returns list of points representing the clipped segment.
+        """
+        # Check if both points are inside
+        p1_inside = (x1 <= max_x and min_y <= y1 <= max_y)
+        p2_inside = (x2 <= max_x and min_y <= y2 <= max_y)
+        
+        if p1_inside and p2_inside:
+            return [(x1, y1)]
+        
+        result = []
+        
+        # Add first point if inside
+        if p1_inside:
+            result.append((x1, y1))
+        
+        # Check for intersections with boundaries
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        if abs(dx) > POINT_EPSILON or abs(dy) > POINT_EPSILON:
+            # Check intersection with x = max_x
+            if (x1 <= max_x < x2) or (x2 < max_x <= x1):
+                t = (max_x - x1) / dx if abs(dx) > POINT_EPSILON else 0
+                if 0 <= t <= 1:
+                    y_int = y1 + t * dy
+                    if min_y <= y_int <= max_y:
+                        result.append((max_x, y_int))
+            
+            # Check intersection with y = min_y
+            if (y1 >= min_y > y2) or (y2 > min_y >= y1):
+                t = (min_y - y1) / dy if abs(dy) > POINT_EPSILON else 0
+                if 0 <= t <= 1:
+                    x_int = x1 + t * dx
+                    if x_int <= max_x:
+                        result.append((x_int, min_y))
+            
+            # Check intersection with y = max_y
+            if (y1 <= max_y < y2) or (y2 < max_y <= y1):
+                t = (max_y - y1) / dy if abs(dy) > POINT_EPSILON else 0
+                if 0 <= t <= 1:
+                    x_int = x1 + t * dx
+                    if x_int <= max_x:
+                        result.append((x_int, max_y))
+        
+        # Add second point if inside
+        if p2_inside:
+            result.append((x2, y2))
+        
+        return result
 
     def GetShapeArea(self, offset: float, space: float) -> float:
         shape = self.GetShape(offset, space)
