@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import List, Tuple
 import matplotlib.pyplot as plt
+
+try:
+    from OCC.Core.gp import gp_Pnt
+    from OCC.Core.GeomAPI import GeomAPI_PointsToBSpline
+    from OCC.Core.GeomAbs import GeomAbs_C2
+    from OCC.Core.TColgp import TColgp_Array1OfPnt
+except ModuleNotFoundError:
+    gp_Pnt = None
+    GeomAPI_PointsToBSpline = None
+    GeomAbs_C2 = None
+    TColgp_Array1OfPnt = None
 
 # ===== 参数 =====
 radius = 6.2055   # 外接圆半径（外边贴圆）
@@ -65,6 +77,282 @@ def spiral_band(radius: float, thick: float, count: int, N_per_turn: int = 1500)
     poly_y = np.concatenate([y_outer, y_inner[::-1]])
 
     return (poly_x, poly_y), (x, y), (theta, r)
+
+def _compute_arc_lengths(theta_array: np.ndarray, r_array: np.ndarray, thick: float) -> np.ndarray:
+    """
+    Compute cumulative arc lengths along the spiral centerline defined by theta/r arrays.
+    
+    Args:
+        theta_array: Parameter angles along the spiral.
+        r_array: Corresponding spiral radii.
+        thick: Spiral band thickness (used to derive dr/dtheta).
+        
+    Returns:
+        np.ndarray: Cumulative arc length array (same length as theta_array).
+    """
+    if len(theta_array) != len(r_array):
+        raise ValueError("theta_array and r_array must have the same length")
+    
+    arc_lengths = np.zeros(len(theta_array))
+    if len(theta_array) < 2:
+        return arc_lengths
+    
+    b = thick / (2.0 * np.pi)
+    dr_dtheta = -b
+    
+    for i in range(1, len(theta_array)):
+        dtheta = theta_array[i] - theta_array[i - 1]
+        r_mid = (r_array[i] + r_array[i - 1]) / 2.0
+        ds = np.sqrt(r_mid ** 2 + dr_dtheta ** 2) * dtheta
+        arc_lengths[i] = arc_lengths[i - 1] + ds
+    
+    return arc_lengths
+
+def generate_spiral_path(num_points: int,
+                         spacing: float,
+                         radius_value: float | None = None,
+                         thick_value: float | None = None,
+                         turns: int | None = None,
+                         samples_per_turn: int = 1500) -> list[dict]:
+    """
+    Sample positions and tangents along the spiral centerline spaced by arc length.
+    
+    Args:
+        num_points: Number of samples requested.
+        spacing: Desired arc-length spacing between samples.
+        radius_value: Override radius (defaults to module constant).
+        thick_value: Override band thickness (defaults to module constant).
+        turns: Override spiral turn count (defaults to module constant).
+        samples_per_turn: Resolution for sampling the spiral (default 1500).
+        
+    Returns:
+        List[dict]: Each entry contains {'x', 'y', 'angle'} where angle is the tangent direction in radians.
+    """
+    if num_points <= 0 or spacing <= 0.0:
+        return []
+    
+    radius_use = radius if radius_value is None else radius_value
+    thick_use = thick if thick_value is None else thick_value
+    count_use = count if turns is None else turns
+    
+    (_, _), (cx, cy), (theta_array, r_array) = spiral_band(radius_use, thick_use, count_use, N_per_turn=samples_per_turn)
+    arc_lengths = _compute_arc_lengths(theta_array, r_array, thick_use)
+    
+    if len(arc_lengths) == 0:
+        return []
+    
+    total_length = arc_lengths[-1]
+    if total_length <= 0.0:
+        return []
+    
+    results: list[dict] = []
+    b = thick_use / (2.0 * np.pi)
+    dr_dtheta = -b
+    
+    for idx_point in range(num_points):
+        target_s = idx_point * spacing
+        if target_s > total_length:
+            break
+        
+        seg_idx = int(np.searchsorted(arc_lengths, target_s, side='right'))
+        if seg_idx == 0:
+            theta_val = theta_array[0]
+            x_val = cx[0]
+            y_val = cy[0]
+        else:
+            seg_idx = min(seg_idx, len(theta_array) - 1)
+            s0 = arc_lengths[seg_idx - 1]
+            s1 = arc_lengths[seg_idx]
+            if s1 - s0 <= 1e-12:
+                lerp = 0.0
+            else:
+                lerp = (target_s - s0) / (s1 - s0)
+            theta0 = theta_array[seg_idx - 1]
+            theta1 = theta_array[seg_idx]
+            theta_val = theta0 + (theta1 - theta0) * lerp
+            x0, y0 = cx[seg_idx - 1], cy[seg_idx - 1]
+            x1, y1 = cx[seg_idx], cy[seg_idx]
+            x_val = x0 + (x1 - x0) * lerp
+            y_val = y0 + (y1 - y0) * lerp
+        
+        r_val = np.interp(theta_val, theta_array, r_array)
+        dx_dtheta = dr_dtheta * np.cos(theta_val) - r_val * np.sin(theta_val)
+        dy_dtheta = dr_dtheta * np.sin(theta_val) + r_val * np.cos(theta_val)
+        angle = float(np.arctan2(dy_dtheta, dx_dtheta))
+        
+        results.append({
+            'x': float(x_val),
+            'y': float(y_val),
+            'angle': angle,
+        })
+    
+    return results
+
+
+class SpiralMapper:
+    """
+    Helper for arc-length based evaluation of the spiral centreline and for constructing
+    OCCT geometry (curve/surface) parameterised by the accumulated arc length.
+    """
+
+    def __init__(self,
+                 radius_value: float | None = None,
+                 thick_value: float | None = None,
+                 turns: int | None = None,
+                 samples_per_turn: int = 2000):
+        self.radius = radius if radius_value is None else radius_value
+        self.thick = thick if thick_value is None else thick_value
+        self.turns = count if turns is None else turns
+        self.samples_per_turn = max(800, int(samples_per_turn))
+        self._precompute()
+
+    def _precompute(self):
+        b = self.thick / (2.0 * np.pi)
+        theta_max = 2.0 * np.pi * self.turns
+        samples = max(int(self.samples_per_turn * self.turns), 2000)
+        self.theta = np.linspace(0.0, theta_max, samples)
+        r0 = self.radius - self.thick / 2.0
+        self.r = r0 - b * self.theta
+        self.dr_dtheta = -b * np.ones_like(self.theta)
+
+        self.x = self.r * np.cos(self.theta)
+        self.z = self.r * np.sin(self.theta)
+
+        self.dx_dtheta = self.dr_dtheta * np.cos(self.theta) - self.r * np.sin(self.theta)
+        self.dz_dtheta = self.dr_dtheta * np.sin(self.theta) + self.r * np.cos(self.theta)
+
+        # Arc-length accumulation
+        self.arc_lengths = np.zeros_like(self.theta)
+        for i in range(1, len(self.theta)):
+            dtheta = self.theta[i] - self.theta[i - 1]
+            norm = np.hypot(self.dx_dtheta[i - 1], self.dz_dtheta[i - 1])
+            if norm <= 0.0:
+                ds = 0.0
+            else:
+                ds = norm * dtheta
+            self.arc_lengths[i] = self.arc_lengths[i - 1] + ds
+
+        self.total_length = float(self.arc_lengths[-1])
+
+    def get_total_length(self) -> float:
+        """Return total available arc length for the configured spiral."""
+        return self.total_length
+
+    def _interpolate_theta(self, s: float) -> Tuple[float, float, float, float]:
+        """Interpolate theta and derivative information for a given arc length s."""
+        if s <= 0.0:
+            idx = 1
+            t = 0.0
+        elif s >= self.total_length:
+            idx = len(self.arc_lengths) - 1
+            t = 1.0
+        else:
+            idx = int(np.searchsorted(self.arc_lengths, s))
+            if idx == 0:
+                idx = 1
+            s0 = self.arc_lengths[idx - 1]
+            s1 = self.arc_lengths[idx]
+            if abs(s1 - s0) <= 1e-12:
+                t = 0.0
+            else:
+                t = (s - s0) / (s1 - s0)
+
+        theta = self.theta[idx - 1] + t * (self.theta[idx] - self.theta[idx - 1])
+        dx_dtheta = self.dx_dtheta[idx - 1] + t * (self.dx_dtheta[idx] - self.dx_dtheta[idx - 1])
+        dz_dtheta = self.dz_dtheta[idx - 1] + t * (self.dz_dtheta[idx] - self.dz_dtheta[idx - 1])
+        r_val = (self.r[idx - 1] + t * (self.r[idx] - self.r[idx - 1]))
+        return theta, r_val, dx_dtheta, dz_dtheta
+
+    def evaluate(self, s: float) -> dict:
+        """
+        Evaluate spiral at arc length s.
+
+        Returns dict with position (x, z), tangent vector (3D), radial vector (3D) and theta.
+        """
+        theta, r_val, dx_dtheta, dz_dtheta = self._interpolate_theta(s)
+        x_val = r_val * np.cos(theta)
+        z_val = r_val * np.sin(theta)
+
+        tangent = np.array([dx_dtheta, 0.0, dz_dtheta])
+        norm = np.linalg.norm(tangent)
+        if norm <= 1e-12:
+            tangent = np.array([0.0, 0.0, 1.0])
+        else:
+            tangent = tangent / norm
+
+        # Radial direction from cross product (Y axis × tangent)
+        radial = np.cross(np.array([0.0, 1.0, 0.0]), tangent)
+        radial_norm = np.linalg.norm(radial)
+        if radial_norm <= 1e-12:
+            radial = np.array([1.0, 0.0, 0.0])
+        else:
+            radial = radial / radial_norm
+
+        return {
+            'theta': theta,
+            'x': x_val,
+            'z': z_val,
+            'tangent': tangent,
+            'radial': radial,
+        }
+
+    def map_point(self,
+                  arc_length: float,
+                  y_offset: float = 0.0,
+                  radial_offset: float = 0.0) -> Tuple[float, float, float]:
+        """
+        Map a single panel point defined by arc length (x direction), vertical offset (y)
+        and thickness offset (radial) onto the 3D spiral surface.
+        """
+        data = self.evaluate(arc_length)
+        base = np.array([data['x'], 0.0, data['z']], dtype=float)
+        vertical = np.array([0.0, y_offset, 0.0], dtype=float)
+        radial_vec = np.array(data['radial'], dtype=float) * radial_offset
+        mapped = base + vertical + radial_vec
+        return float(mapped[0]), float(mapped[1]), float(mapped[2])
+
+    def map_curve_points(self,
+                         shape_curve: List[Tuple[float, float]],
+                         x_offset: float = 0.0,
+                         y_offset: float = 0.0,
+                         x_origin: float = 0.0,
+                         radial_offset: float = 0.0) -> List[Tuple[float, float, float]]:
+        """
+        Map an entire 2D curve onto the spiral surface while preserving relative offsets.
+        """
+        mapped: List[Tuple[float, float, float]] = []
+        for x_val, y_val in shape_curve:
+            arc_length = x_offset + (x_val - x_origin)
+            mapped.append(self.map_point(arc_length, y_offset + y_val, radial_offset))
+        return mapped
+
+    def build_bspline_curve(self, max_length: float):
+        """
+        Build an OCC Geom_BSplineCurve parameterised by arc length (s) up to max_length.
+        """
+        max_length = max(0.0, min(max_length, self.total_length))
+        if max_length <= 0.0:
+            raise ValueError("max_length must be positive and within spiral span")
+
+        if gp_Pnt is None or GeomAPI_PointsToBSpline is None or TColgp_Array1OfPnt is None:
+            raise RuntimeError("OpenCASCADE is required to build BSpline curves for the spiral")
+
+        # Determine number of samples proportionally to requested length
+        if self.total_length <= 0.0:
+            raise ValueError("Spiral total length is zero; cannot build curve")
+
+        ratio = max_length / self.total_length
+        sample_count = max(5, int(self.samples_per_turn * ratio) + 2)
+
+        s_values = np.linspace(0.0, max_length, sample_count)
+        points = TColgp_Array1OfPnt(1, sample_count)
+
+        for idx, s_val in enumerate(s_values, start=1):
+            data = self.evaluate(float(s_val))
+            points.SetValue(idx, gp_Pnt(float(data['x']), 0.0, float(data['z'])))
+
+        spline_builder = GeomAPI_PointsToBSpline(points, 3, 8, GeomAbs_C2)
+        return spline_builder.Curve()
 
 def generate_rectangles(theta_array, r_array, rect_width: float, rect_gap: float, thick: float):
     """

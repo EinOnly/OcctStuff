@@ -1,7 +1,8 @@
 import math
 from pattern import Pattern
-from step import StepExporter
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication, QPushButton, QFileDialog)
+from step import StepExporter, SpiralSurfaceBuilder
+from curve import SpiralMapper
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
@@ -291,6 +292,10 @@ class Visualizer(QWidget):
         
         # Twist mode - flip bottom half horizontally at pattern height center
         self.twist_enabled = False
+        # Spiral placement parameters (defaults follow curve.py constants)
+        self.spiral_radius = None
+        self.spiral_thickness = None
+        self.spiral_turns = None
         
         # Cache for chart data
         self.chart_needs_update = True
@@ -768,25 +773,101 @@ class Visualizer(QWidget):
             # Apply twist transformation if enabled
             closed_curve = self._apply_twist_to_shape(closed_curve)
             
-            # Create all shapes (same as 3D display)
+            options = ["Straight Array", "Spiral Coil", "Both"]
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Select Geometry",
+                "Choose which arrangement to export:",
+                options,
+                current=0,
+                editable=False
+            )
+            if not ok:
+                print("STEP export cancelled")
+                return
+            
+            export_straight = choice in ("Straight Array", "Both")
+            export_spiral = choice in ("Spiral Coil", "Both")
+
             thickness = self.step_exporter.thickness
             center_x = self.pattern.width / 2.0
+            center_y = self.pattern.height / 2.0
+            mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
+
             all_shapes = []
-            
-            for i in range(int(self.assembly_count)):
-                # Horizontal offset
-                x_offset = i * offset
-                
-                # Left shape - upper layer (z = thickness)
-                translated_curve = [(p[0] + x_offset, p[1]) for p in closed_curve]
-                shape_left = self.step_exporter.create_shape_from_curve(translated_curve, z_offset=thickness)
-                all_shapes.append(shape_left)
-                
-                # Right shape (mirrored) - lower layer (z = 0)
-                mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
-                translated_mirrored_curve = [(p[0] + x_offset, p[1]) for p in mirrored_curve]
-                shape_right = self.step_exporter.create_shape_from_curve(translated_mirrored_curve, z_offset=0.0)
-                all_shapes.append(shape_right)
+
+            if export_straight:
+                base_left = self.step_exporter.create_shape_from_curve(closed_curve, z_offset=thickness)
+                base_right = self.step_exporter.create_shape_from_curve(mirrored_curve, z_offset=0.0)
+                count = int(self.assembly_count)
+                for i in range(count):
+                    x_offset = i * offset
+                    shape_left = self.step_exporter.translate_shape(base_left, x_offset, 0.0, 0.0)
+                    shape_right = self.step_exporter.translate_shape(base_right, x_offset, 0.0, 0.0)
+                    all_shapes.extend([shape_left, shape_right])
+
+            if export_spiral:
+                try:
+                    max_u_required = 0.0
+                    curve_min_x = min(p[0] for p in closed_curve)
+                    curve_max_x = max(p[0] for p in closed_curve)
+                    curve_span = max(0.0, curve_max_x - curve_min_x)
+                    mirror_min_x = min(p[0] for p in mirrored_curve)
+                    mirror_max_x = max(p[0] for p in mirrored_curve)
+                    mirror_span = max(0.0, mirror_max_x - mirror_min_x)
+                    for i in range(int(self.assembly_count)):
+                        x_offset = i * offset
+                        max_u_required = max(max_u_required,
+                                             x_offset + curve_span,
+                                             x_offset + mirror_span)
+                    max_u_required = max(max_u_required, 1e-6)
+
+                    spiral_mapper = SpiralMapper(
+                        radius_value=self.spiral_radius,
+                        thick_value=self.spiral_thickness,
+                        turns=self.spiral_turns
+                    )
+                    if max_u_required > spiral_mapper.get_total_length():
+                        print("Warning: Spiral length insufficient for export; truncating coil geometry.")
+
+                    spiral_builder = SpiralSurfaceBuilder(
+                        mapper=spiral_mapper,
+                        max_length=max_u_required
+                    )
+
+                    for i in range(int(self.assembly_count)):
+                        x_offset = i * offset
+                        try:
+                            curved_solid_left = spiral_builder.create_thick_solid(
+                                closed_curve,
+                                thickness,
+                                x_offset=x_offset,
+                                x_origin=curve_min_x,
+                                radial_direction=1.0
+                            )
+                            all_shapes.append(curved_solid_left)
+                        except Exception as err:
+                            print(f"Skipping spiral left segment {i}: {err}")
+
+                        try:
+                            curved_solid_right = spiral_builder.create_thick_solid(
+                                mirrored_curve,
+                                thickness,
+                                x_offset=x_offset,
+                                x_origin=curve_min_x,
+                                x_transform=lambda xv: 2 * center_x - xv,
+                                radial_direction=-1.0
+                            )
+                            all_shapes.append(curved_solid_right)
+                        except Exception as err:
+                            print(f"Skipping spiral right segment {i}: {err}")
+
+                except Exception as spiral_err:
+                    print(f"Unable to construct spiral solids for export: {spiral_err}")
+
+            if not all_shapes:
+                print("No shapes selected for export.")
+                return
             
             # Open file dialog
             filename, _ = QFileDialog.getSaveFileName(
@@ -853,7 +934,7 @@ class Visualizer(QWidget):
         count_slider = Slider(
             label='count',
             min_val=1,
-            max_val=50,
+            max_val=600,
             initial=self.assembly_count,
             step=1
         )
@@ -952,32 +1033,113 @@ class Visualizer(QWidget):
             
             # Get closed shape from pattern using GetShape() - same as assembly
             closed_curve = self.pattern.GetShape(offset=offset, space=0.05)
-            
             if not closed_curve or len(closed_curve) < 3:
                 return
-            
-            # Apply twist transformation if enabled
             closed_curve = self._apply_twist_to_shape(closed_curve)
-            
-            # Create shapes with array pattern - alternating Z offset
+
             thickness = self.step_exporter.thickness
             center_x = self.pattern.width / 2.0
-            
-            for i in range(int(self.assembly_count)):
-                # Horizontal offset - use offset variable (same as assembly)
+            center_y = self.pattern.height / 2.0
+
+            mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
+
+            base_left = self.step_exporter.create_shape_from_curve(closed_curve, z_offset=thickness)
+            base_right = self.step_exporter.create_shape_from_curve(mirrored_curve, z_offset=0.0)
+
+            # Centered copies for spiral placement (origin at pattern centre, thickness centred about zero)
+            base_left_spiral = self.step_exporter.translate_shape(
+                base_left,
+                -center_x,
+                -center_y,
+                -1.5 * thickness
+            )
+            base_right_spiral = self.step_exporter.translate_shape(
+                base_right,
+                -center_x,
+                -center_y,
+                -0.5 * thickness
+            )
+
+            count = int(self.assembly_count)
+            for i in range(count):
                 x_offset = i * offset
-                
-                # Left shape - all at upper layer (z = thickness)
-                translated_curve = [(p[0] + x_offset, p[1]) for p in closed_curve]
-                shape_left = self.step_exporter.create_shape_from_curve(translated_curve, z_offset=thickness)
-                self.viewer3d._display.DisplayShape(shape_left, update=False, color='BLUE', transparency=0.2)
-                
-                # Right shape (mirrored) - all at lower layer (z = 0)
-                mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
-                translated_mirrored_curve = [(p[0] + x_offset, p[1]) for p in mirrored_curve]
-                shape_right = self.step_exporter.create_shape_from_curve(translated_mirrored_curve, z_offset=0.0)
-                self.viewer3d._display.DisplayShape(shape_right, update=False, color='CYAN', transparency=0.3)
-            
+                left_shape = self.step_exporter.translate_shape(base_left, x_offset, 0.0, 0.0)
+                self.viewer3d._display.DisplayShape(left_shape, update=False, color='BLUE', transparency=0.2)
+
+                right_shape = self.step_exporter.translate_shape(base_right, x_offset, 0.0, 0.0)
+                self.viewer3d._display.DisplayShape(right_shape, update=False, color='CYAN', transparency=0.3)
+
+            # Build curved coil representation using spiral surface mapping
+            try:
+                curve_min_x = min(p[0] for p in closed_curve)
+                curve_max_x = max(p[0] for p in closed_curve)
+                curve_span = max(0.0, curve_max_x - curve_min_x)
+                mirror_min_x = min(p[0] for p in mirrored_curve)
+                mirror_max_x = max(p[0] for p in mirrored_curve)
+                mirror_span = max(0.0, mirror_max_x - mirror_min_x)
+
+                max_u_required = 0.0
+                for i in range(count):
+                    x_offset = i * offset
+                    max_u_required = max(max_u_required,
+                                         x_offset + curve_span,
+                                         x_offset + mirror_span)
+                max_u_required = max(max_u_required, 1e-6)
+
+                spiral_mapper = SpiralMapper(
+                    radius_value=self.spiral_radius,
+                    thick_value=self.spiral_thickness,
+                    turns=self.spiral_turns
+                )
+                if max_u_required > spiral_mapper.get_total_length():
+                    print("Warning: Spiral length insufficient for requested array; truncating coil display.")
+
+                spiral_builder = SpiralSurfaceBuilder(
+                    mapper=spiral_mapper,
+                    max_length=max_u_required
+                )
+
+                for i in range(count):
+                    x_offset = i * offset
+
+                    try:
+                        curved_solid_left = spiral_builder.create_thick_solid(
+                            closed_curve,
+                            self.step_exporter.thickness,
+                            x_offset=x_offset,
+                            x_origin=curve_min_x,
+                            radial_direction=1.0
+                        )
+                        self.viewer3d._display.DisplayShape(
+                            curved_solid_left,
+                            update=False,
+                            color='GREEN',
+                            transparency=0.35
+                        )
+                    except Exception as err:
+                        print(f"Failed to build spiral left segment {i}: {err}")
+
+                    try:
+                        curved_solid_right = spiral_builder.create_thick_solid(
+                            mirrored_curve,
+                            self.step_exporter.thickness,
+                            x_offset=x_offset,
+                            x_origin=curve_min_x,
+                            x_transform=lambda xv: 2 * center_x - xv,
+                            radial_direction=-1.0
+                        )
+                        self.viewer3d._display.DisplayShape(
+                            curved_solid_right,
+                            update=False,
+                            color='MAGENTA',
+                            transparency=0.45
+                        )
+                    except Exception as err:
+                        print(f"Failed to build spiral right segment {i}: {err}")
+
+            except Exception as coil_error:
+                print(f"Unable to generate spiral coil representation: {coil_error}")
+
             # Fit all shapes in view
             self.viewer3d._display.FitAll()
             self.viewer3d._display.Repaint()
