@@ -832,7 +832,8 @@ class Visualizer(QWidget):
 
                     spiral_builder = SpiralSurfaceBuilder(
                         mapper=spiral_mapper,
-                        max_length=max_u_required
+                        max_length=max_u_required,
+                        pattern_thickness=self.step_exporter.thickness
                     )
 
                     for i in range(int(self.assembly_count)):
@@ -843,8 +844,9 @@ class Visualizer(QWidget):
                                 thickness,
                                 x_offset=x_offset,
                                 x_origin=curve_min_x,
-                                radial_direction=1.0
+                                layers=[('outer', 'middle')]
                             )
+                            curved_solid_left = self.step_exporter.translate_shape(curved_solid_left, x_offset, 0.0, 0.0)
                             all_shapes.append(curved_solid_left)
                         except Exception as err:
                             print(f"Skipping spiral left segment {i}: {err}")
@@ -856,8 +858,9 @@ class Visualizer(QWidget):
                                 x_offset=x_offset,
                                 x_origin=curve_min_x,
                                 x_transform=lambda xv: 2 * center_x - xv,
-                                radial_direction=-1.0
+                                layers=[('middle', 'inner')]
                             )
+                            curved_solid_right = self.step_exporter.translate_shape(curved_solid_right, x_offset, 0.0, -thickness)
                             all_shapes.append(curved_solid_right)
                         except Exception as err:
                             print(f"Skipping spiral right segment {i}: {err}")
@@ -1096,7 +1099,8 @@ class Visualizer(QWidget):
 
                 spiral_builder = SpiralSurfaceBuilder(
                     mapper=spiral_mapper,
-                    max_length=max_u_required
+                    max_length=max_u_required,
+                    pattern_thickness=self.step_exporter.thickness
                 )
 
                 for i in range(count):
@@ -1108,8 +1112,9 @@ class Visualizer(QWidget):
                             self.step_exporter.thickness,
                             x_offset=x_offset,
                             x_origin=curve_min_x,
-                            radial_direction=1.0
+                            layers=[('outer', 'middle')]
                         )
+                        curved_solid_left = self.step_exporter.translate_shape(curved_solid_left, x_offset, 0.0, 0.0)
                         self.viewer3d._display.DisplayShape(
                             curved_solid_left,
                             update=False,
@@ -1126,8 +1131,9 @@ class Visualizer(QWidget):
                             x_offset=x_offset,
                             x_origin=curve_min_x,
                             x_transform=lambda xv: 2 * center_x - xv,
-                            radial_direction=-1.0
+                            layers=[('middle', 'inner')]
                         )
+                        curved_solid_right = self.step_exporter.translate_shape(curved_solid_right, x_offset, 0.0, -self.step_exporter.thickness)
                         self.viewer3d._display.DisplayShape(
                             curved_solid_right,
                             update=False,
