@@ -15,7 +15,7 @@
             "name": "Debug_Main",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/sources/main.py",
+            "program": "${workspaceFolder}/sources/motor/main.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": []

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Sequence
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider, Button
 
 try:
     from OCC.Core.gp import gp_Pnt
@@ -20,17 +21,66 @@ except ModuleNotFoundError:
 # ===== 参数 =====
 radius = 6.2055   # 外接圆半径（外边贴圆）
 thick  = 0.1315   # 螺旋带宽度（也是圈距）
-count  = 6        # 卷绕圈数
+layer_count  = 6        # 卷绕圈数
 save_path = "spiral.png"
 
 # ===== 矩形参数 =====
 rect_width = 0.3777   # 矩形沿螺旋线方向的宽度
 rect_gap = 0.05       # 矩形之间的间隔
+rect_thick = 0.047*2
 # 矩形厚度 = thick（沿法线方向）
+
 
 # ===== 渐变矩形参数 =====
 rect_width_start = 0.3777  # 起始宽度
 width_change_rate = -0.02  # 每圈宽度变化量（负数表示递减）
+
+
+_RECT_COLOR_BASE: Tuple[Tuple[float, float, float], ...] = (
+    (0.20, 0.42, 0.88),  # 深蓝
+    (0.88, 0.24, 0.24),  # 红色
+    (0.22, 0.65, 0.32),  # 绿色备用
+)
+
+AREA_DIVISION_RANGE = (17, 100)
+
+
+def _build_rect_palette(num_divisions: int) -> Tuple[Tuple[float, float, float], ...]:
+    """Choose a palette that alternates blue/red and adds a third tone when needed."""
+    if num_divisions <= 0:
+        return _RECT_COLOR_BASE[:2]
+    if num_divisions % 2 == 0 or num_divisions <= 2:
+        return _RECT_COLOR_BASE[:2]
+    return _RECT_COLOR_BASE
+
+
+def _color_from_index(index: int, palette: Tuple[Tuple[float, float, float], ...]) -> Tuple[float, float, float]:
+    """Return a stable color for a rectangle based on its index and palette."""
+    if not palette:
+        return (0.5, 0.5, 0.5)
+    return palette[index % len(palette)]
+
+
+def _estimate_rect_width(rect: np.ndarray) -> float:
+    """Approximate rectangle width along the spiral tangent."""
+    if rect.shape[0] < 4:
+        return 0.0
+    top = np.linalg.norm(rect[1] - rect[0])
+    bottom = np.linalg.norm(rect[2] - rect[3])
+    return float(0.5 * (top + bottom))
+
+
+def _calculate_spiral_area(radius_value: float, thick_value: float, turn_count: int) -> float:
+    """Compute spiral band area by accumulating ring areas per turn."""
+    if turn_count <= 0:
+        return 0.0
+    b = thick_value / (2.0 * np.pi)
+    spiral_area = 0.0
+    for turn in range(turn_count):
+        r_out = radius_value - b * 2.0 * np.pi * turn
+        r_in = radius_value - b * 2.0 * np.pi * (turn + 1)
+        spiral_area += np.pi * (r_out ** 2 - r_in ** 2)
+    return float(max(0.0, spiral_area))
 
 def spiral_band(radius: float, thick: float, count: int, N_per_turn: int = 1500):
     # 保证带宽正、圈数正
@@ -133,7 +183,7 @@ def generate_spiral_path(num_points: int,
     
     radius_use = radius if radius_value is None else radius_value
     thick_use = thick if thick_value is None else thick_value
-    count_use = count if turns is None else turns
+    count_use = layer_count if turns is None else turns
     
     (_, _), (cx, cy), (theta_array, r_array) = spiral_band(radius_use, thick_use, count_use, N_per_turn=samples_per_turn)
     arc_lengths = _compute_arc_lengths(theta_array, r_array, thick_use)
@@ -202,7 +252,7 @@ class SpiralMapper:
                  samples_per_turn: int = 2000):
         self.radius = radius if radius_value is None else radius_value
         self.thick = thick if thick_value is None else thick_value
-        self.turns = count if turns is None else turns
+        self.turns = layer_count if turns is None else turns
         self.samples_per_turn = max(800, int(samples_per_turn))
         self._precompute()
 
@@ -474,7 +524,8 @@ def generate_rectangles(theta_array, r_array, rect_width: float, rect_gap: float
 
 def generate_gradient_rectangles_aligned(theta_array, r_array, rect_width_start: float,
                                         width_change_rate: float, rect_gap: float,
-                                        thick: float, count: int, num_divisions: int = 96):
+                                        thick: float, count: int, num_divisions: int = 96,
+                                        force_width: float | None = None):
     """
     基于径向 96 分割生成对齐的渐变矩形。
 
@@ -533,6 +584,8 @@ def generate_gradient_rectangles_aligned(theta_array, r_array, rect_width_start:
 
     for turn in range(count):
         current_width = rect_width_start + turn * width_change_rate
+        if force_width is not None:
+            current_width = force_width
         if current_width <= 0.0:
             break
 
@@ -594,6 +647,308 @@ def generate_gradient_rectangles_aligned(theta_array, r_array, rect_width_start:
 
     return rectangles
 
+def generate_constant_count_rectangles(theta_array,
+                                       r_array,
+                                       rect_width: float,
+                                       rect_gap: float,
+                                       thick: float,
+                                       count: int,
+                                       constant_count: int = 96,
+                                       mode: str = "fixed_count") -> dict:
+    """
+    生成按圈对齐的矩形，并提供图层对齐信息。
+
+    Args:
+        theta_array: 螺旋角度序列
+        r_array: 对应半径序列
+        rect_width: 参考矩形宽度（用于 outer_layer 模式的初始估计）
+        rect_gap: 矩形间距
+        thick: 螺旋厚度
+        count: 圈数
+        constant_count: 固定数量模式下的分段数
+        mode: "fixed_count"（模式 B）或 "outer_layer"（模式 A，原 outer_width）
+
+    Returns:
+        dict 包含:
+            rectangles: 顶点数组列表
+            used_count: 目标分段数量
+            metadata: 每个矩形的层/序号信息
+            widths_per_layer: 每层计算得到的矩形宽度
+            layer_lengths: 每层的弧长
+            layer_rect_counts: 每层实际生成的矩形数量
+            mode: 归一化后的模式名称
+    """
+    if rect_gap < 0.0:
+        return {
+            'rectangles': [],
+            'used_count': 0,
+            'metadata': [],
+            'widths_per_layer': [],
+            'layer_lengths': [],
+            'layer_rect_counts': [],
+            'mode': (mode or "").lower(),
+        }
+
+    if constant_count <= 0:
+        constant_count = 1
+
+    arc_lengths = _compute_arc_lengths(theta_array, r_array, thick)
+    if len(arc_lengths) == 0:
+        return {
+            'rectangles': [],
+            'used_count': 0,
+            'metadata': [],
+            'widths_per_layer': [],
+            'layer_lengths': [],
+            'layer_rect_counts': [],
+            'mode': (mode or "").lower(),
+        }
+
+    dr_dtheta_array = np.gradient(r_array, theta_array)
+
+    def theta_from_arc(s_val: float) -> float:
+        s_clamped = max(arc_lengths[0], min(s_val, arc_lengths[-1]))
+        return float(np.interp(s_clamped, arc_lengths, theta_array))
+
+    def position_at_theta(theta_val: float) -> np.ndarray:
+        r_val = float(np.interp(theta_val, theta_array, r_array))
+        return np.array([r_val * np.cos(theta_val), r_val * np.sin(theta_val)])
+
+    def tangent_normal_at_theta(theta_val: float) -> Tuple[np.ndarray, np.ndarray]:
+        r_val = float(np.interp(theta_val, theta_array, r_array))
+        dr_val = float(np.interp(theta_val, theta_array, dr_dtheta_array))
+        dx = dr_val * np.cos(theta_val) - r_val * np.sin(theta_val)
+        dy = dr_val * np.sin(theta_val) + r_val * np.cos(theta_val)
+        norm = np.hypot(dx, dy)
+        if norm < 1e-12:
+            return np.array([0.0, 0.0]), np.array([0.0, 0.0])
+        tangent = np.array([dx / norm, dy / norm])
+        normal = np.array([-tangent[1], tangent[0]])
+        return tangent, normal
+
+    mode_key = (mode or "").lower()
+    if mode_key == "outer_width":
+        mode_key = "outer_layer"
+    if mode_key not in ("fixed_count", "outer_layer"):
+        mode_key = "fixed_count"
+
+    rectangles: List[np.ndarray] = []
+    metadata: List[dict] = []
+    widths_per_layer: List[float] = []
+    layer_rect_counts: List[int] = []
+    half_thick = thick / 2.0
+    full_turn = 2.0 * np.pi
+    eps = 1e-9
+    max_theta = theta_array[-1]
+    used_count = max(1, int(round(constant_count)))
+
+    layer_segments: List[Tuple[float, float, float, float]] = []
+    for turn in range(count):
+        theta_start = turn * full_turn
+        theta_end = min((turn + 1) * full_turn, max_theta)
+        if theta_start >= max_theta - eps:
+            break
+        if theta_end - theta_start <= eps:
+            continue
+        s_start = float(np.interp(theta_start, theta_array, arc_lengths))
+        s_end = float(np.interp(theta_end, theta_array, arc_lengths))
+        if s_end - s_start <= eps:
+            continue
+        layer_segments.append((theta_start, theta_end, s_start, s_end))
+
+    if not layer_segments:
+        return {
+            'rectangles': [],
+            'used_count': used_count,
+            'metadata': [],
+            'widths_per_layer': [],
+            'layer_lengths': [],
+            'layer_rect_counts': [],
+            'mode': mode_key,
+        }
+
+    layer_lengths = [seg[3] - seg[2] for seg in layer_segments]
+
+    if mode_key == "outer_layer":
+        denom = rect_width + rect_gap
+        if denom <= eps:
+            used_count = max(1, used_count)
+        else:
+            estimated = int(np.floor(layer_lengths[0] / denom))
+            used_count = max(1, estimated)
+        while used_count > 1:
+            min_width = min((length / used_count) - rect_gap for length in layer_lengths)
+            if min_width > eps:
+                break
+            used_count -= 1
+        used_count = max(1, used_count)
+
+    for layer_idx, (_, _, s_start, s_end) in enumerate(layer_segments):
+        layer_length = s_end - s_start
+        if used_count <= 0 or layer_length <= eps:
+            widths_per_layer.append(0.0)
+            layer_rect_counts.append(0)
+            continue
+        width_val = (layer_length / used_count) - rect_gap
+        widths_per_layer.append(max(0.0, width_val))
+        if width_val <= eps:
+            layer_rect_counts.append(0)
+            continue
+
+        current_s = s_start
+        layer_generated = 0
+        for div_idx in range(used_count):
+            start_s = current_s
+            end_s = min(s_end, start_s + width_val)
+
+            theta0 = theta_from_arc(start_s)
+            theta1 = theta_from_arc(end_s)
+            pos0 = position_at_theta(theta0)
+            pos1 = position_at_theta(theta1)
+            tangent0, normal0 = tangent_normal_at_theta(theta0)
+            tangent1, normal1 = tangent_normal_at_theta(theta1)
+
+            if np.linalg.norm(tangent0) < eps or np.linalg.norm(tangent1) < eps:
+                current_s = start_s + width_val + rect_gap
+                continue
+
+            p1 = pos0 + half_thick * normal0
+            p2 = pos1 + half_thick * normal1
+            p3 = pos1 - half_thick * normal1
+            p4 = pos0 - half_thick * normal0
+            rectangles.append(np.array([p1, p2, p3, p4]))
+            metadata.append({'layer': layer_idx, 'index': div_idx})
+            layer_generated += 1
+            current_s = end_s + rect_gap
+        layer_rect_counts.append(layer_generated)
+
+    return {
+        'rectangles': rectangles,
+        'used_count': used_count,
+        'metadata': metadata,
+        'widths_per_layer': widths_per_layer,
+        'layer_lengths': layer_lengths,
+        'layer_rect_counts': layer_rect_counts,
+        'mode': mode_key,
+    }
+
+
+def _draw_spiral_panels(ax_fixed, ax_equal, ax_gradient,
+                        radius_value: float,
+                        thick_value: float,
+                        count_value: int,
+                        rect_width_value: float,
+                        rect_width_start_value: float,
+                        width_change_rate_value: float,
+                        rect_gap_value: float,
+                        constant_mode: str = "fixed_count",
+                        lock_gradient_width: bool = False,
+                        constant_count_value: int = 96) -> dict:
+    """Render the three comparison panels onto provided axes."""
+    axes = [ax_fixed, ax_equal, ax_gradient]
+    for ax in axes:
+        ax.clear()
+
+    (poly_x, poly_y), (cx, cy), (theta, r) = spiral_band(radius_value, thick_value, count_value)
+
+    ax_fixed.fill(poly_x, poly_y, alpha=0.3, color='lightblue', label='Spiral Band')
+    ax_fixed.plot(cx, cy, linewidth=0.8, color="k", label='Center Line')
+    rectangles_fixed = generate_rectangles(theta, r, rect_width_value, rect_gap_value, thick_value)
+    area_info_fixed = calculate_area_ratio(
+        radius_value, thick_value, count_value, rectangles_fixed,
+        rect_width=rect_width_value, rect_thickness=rect_thick)
+    equal_data = generate_constant_count_rectangles(
+        theta, r, rect_width_value, rect_gap_value, thick_value, count_value,
+        constant_count=constant_count_value,
+        mode=constant_mode)
+    equal_rectangles = equal_data['rectangles']
+    equal_per_turn = equal_data['used_count']
+    equal_meta = equal_data['metadata']
+    per_layer_widths = equal_data['widths_per_layer']
+    layer_rect_counts = equal_data['layer_rect_counts']
+    layer_lengths = equal_data['layer_lengths']
+    palette = _build_rect_palette(equal_per_turn or max(1, int(round(constant_count_value))))
+    for idx, rect in enumerate(rectangles_fixed):
+        rect_closed = np.vstack([rect, rect[0]])
+        color = _color_from_index(idx, palette)
+        ax_fixed.fill(rect_closed[:, 0], rect_closed[:, 1],
+                      alpha=0.7, color=color, edgecolor='darkred', linewidth=0.5)
+
+    ax_equal.fill(poly_x, poly_y, alpha=0.3, color='lightblue', label='Spiral Band')
+    ax_equal.plot(cx, cy, linewidth=0.8, color="k", label='Center Line')
+    effective_turns = len(layer_lengths) if layer_lengths else count_value
+    area_info_equal = calculate_area_ratio(
+        radius_value, thick_value, effective_turns,
+        widths_per_layer=per_layer_widths,
+        count_per_layer=layer_rect_counts,
+        rect_thickness=rect_thick)
+    for rect, info in zip(equal_rectangles, equal_meta):
+        rect_closed = np.vstack([rect, rect[0]])
+        color = _color_from_index(info.get('index', 0), palette)
+        ax_equal.fill(rect_closed[:, 0], rect_closed[:, 1],
+                      alpha=0.7, color=color, edgecolor='darkred', linewidth=0.5)
+
+    rectangles_gradient = generate_gradient_rectangles_aligned(
+        theta, r, rect_width_start_value, width_change_rate_value, rect_gap_value,
+        thick_value, count_value, force_width=rect_width_start_value if lock_gradient_width else None)
+    ax_gradient.fill(poly_x, poly_y, alpha=0.3, color='lightblue', label='Spiral Band')
+    ax_gradient.plot(cx, cy, linewidth=0.8, color="k", label='Center Line')
+    area_info_gradient = calculate_area_ratio(
+        radius_value, thick_value, count_value, rectangles_gradient,
+        rect_thickness=rect_thick)
+    for idx, rect in enumerate(rectangles_gradient):
+        rect_closed = np.vstack([rect, rect[0]])
+        color = _color_from_index(idx, palette)
+        ax_gradient.fill(rect_closed[:, 0], rect_closed[:, 1],
+                         alpha=0.7, color=color, edgecolor='darkred', linewidth=0.5)
+
+    t = np.linspace(0, 2*np.pi, 720)
+    lim = radius_value + thick_value
+    for ax in axes:
+        ax.plot(radius_value*np.cos(t), radius_value*np.sin(t), linestyle="--",
+                color="gray", linewidth=0.8, label='Outer Circle')
+        ax.set_aspect('equal')
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.legend(loc='upper right', fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    ax_fixed.set_title(
+        f"Fixed Width Rectangles\nwidth={rect_width_value}, gap={rect_gap_value}\n"
+        f"Area Ratio: {area_info_fixed['ratio_percent']:.2f}%"
+    )
+
+    mode_label = "Mode B: Fixed Count" if constant_mode == "fixed_count" else "Mode A: Outer Derived"
+    count_text = equal_per_turn if equal_per_turn else "auto"
+    ax_equal.set_title(
+        f"{mode_label} Rectangles\ncount/turn={count_text}, gap={rect_gap_value}\n"
+        f"Area Ratio: {area_info_equal['ratio_percent']:.2f}%"
+    )
+
+    if lock_gradient_width:
+        gradient_width_desc = f"width: {rect_width_start_value} (locked)"
+    else:
+        gradient_width_desc = f"width: {rect_width_start_value} + {width_change_rate_value}/turn"
+    ax_gradient.set_title(
+        "Gradient Width Rectangles (Radially Aligned)\n"
+        f"{gradient_width_desc}, gap={rect_gap_value}\n"
+        f"Area Ratio: {area_info_gradient['ratio_percent']:.2f}%"
+    )
+
+    return {
+        'fixed': area_info_fixed,
+        'constant': area_info_equal,
+        'gradient': area_info_gradient,
+        'count_per_turn': equal_per_turn,
+        'per_layer_widths': per_layer_widths,
+        'layer_lengths': layer_lengths,
+        'layer_rect_counts': layer_rect_counts,
+        'mode': equal_data.get('mode', constant_mode),
+    }
+
+
 def plot_spiral(radius: float, thick: float, count: int, save_path: str | None = None, 
                 show_rectangles: bool = True):
     (poly_x, poly_y), (cx, cy), (theta, r) = spiral_band(radius, thick, count)
@@ -606,12 +961,13 @@ def plot_spiral(radius: float, thick: float, count: int, save_path: str | None =
     if show_rectangles:
         rectangles = generate_rectangles(theta, r, rect_width, rect_gap, thick)
         print(f"生成了 {len(rectangles)} 个矩形")
-        
-        for rect in rectangles:
+        palette = _build_rect_palette(len(rectangles))
+        for idx, rect in enumerate(rectangles):
             # 闭合矩形路径
             rect_closed = np.vstack([rect, rect[0]])
+            color = _color_from_index(idx, palette)
             ax.fill(rect_closed[:, 0], rect_closed[:, 1], 
-                   alpha=0.7, color='orange', edgecolor='red', linewidth=0.5)
+                   alpha=0.7, color=color, edgecolor='darkred', linewidth=0.5)
 
     # 外接圆参考线
     t = np.linspace(0, 2*np.pi, 720)
@@ -649,15 +1005,14 @@ def plot_spiral_gradient(radius: float, thick: float, count: int,
                                                      width_change_rate, rect_gap, 
                                                      thick, count)
     print(f"生成了 {len(rectangles)} 个渐变矩形")
-    
-    # 使用颜色映射显示不同圈的矩形
-    colors = plt.cm.rainbow(np.linspace(0, 1, len(rectangles)))
-    
+    palette = _build_rect_palette(len(rectangles))
+
     for idx, rect in enumerate(rectangles):
         # 闭合矩形路径
         rect_closed = np.vstack([rect, rect[0]])
+        color = _color_from_index(idx, palette)
         ax.fill(rect_closed[:, 0], rect_closed[:, 1], 
-               alpha=0.7, color=colors[idx], edgecolor='darkred', linewidth=0.5)
+               alpha=0.7, color=color, edgecolor='darkred', linewidth=0.5)
 
     # 外接圆参考线
     t = np.linspace(0, 2*np.pi, 720)
@@ -681,150 +1036,441 @@ def plot_spiral_gradient(radius: float, thick: float, count: int,
         print(f"已保存图像到: {save_path}")
     plt.show()
 
-def calculate_area_ratio(radius: float, thick: float, count: int, rectangles: list) -> dict:
+def calculate_area_ratio(radius: float,
+                         thick: float,
+                         count: int,
+                         rectangles: list | None = None,
+                         *,
+                         rect_width: float | None = None,
+                         widths_per_layer: Sequence[float] | None = None,
+                         count_per_layer: Sequence[int] | None = None,
+                         rect_thickness: float | None = None) -> dict:
     """
-    计算螺旋带面积和矩形面积的占比
-    
-    参数:
+    计算螺旋带面积和矩形面积的占比（按矩形宽度*厚度估算）。
+
+    Args:
         radius: 外接圆半径
         thick: 螺旋带宽度
-        count: 卷绕圈数
-        rectangles: 矩形列表
-    
-    返回:
-        字典包含：螺旋带面积、矩形总面积、占比
+        count: 圈数
+        rectangles: 矩形列表（可选）
+        rect_width: 若提供，则所有矩形使用统一宽度
+        widths_per_layer: 每层矩形宽度列表
+        count_per_layer: 每层矩形数量列表（须与 widths_per_layer 长度一致）
+
+    Returns:
+        包含螺旋带面积、矩形总面积和占比的字典。
     """
-    # 计算螺旋带面积
-    # 螺旋带可以看作是一个环形带，外半径从 radius 到内半径
-    b = thick / (2.0 * np.pi)
-    r_outer = radius
-    r_inner = radius - thick / 2.0 - b * 2.0 * np.pi * count
-    
-    # 使用更精确的方法：计算每一圈的面积并累加
-    spiral_area = 0.0
-    for turn in range(count):
-        # 当前圈的外半径和内半径
-        r_out = radius - b * 2.0 * np.pi * turn
-        r_in = radius - b * 2.0 * np.pi * (turn + 1)
-        
-        # 环形面积
-        ring_area = np.pi * (r_out**2 - r_in**2)
-        spiral_area += ring_area
-    
-    # 计算矩形总面积（使用 Shoelace 公式）
+    spiral_area = _calculate_spiral_area(radius, thick, count)
+
+    rect_thickness_use = rect_thickness if rect_thickness is not None else rect_thick
+
     total_rect_area = 0.0
-    for rect in rectangles:
-        # Shoelace 公式计算多边形面积
-        x = rect[:, 0]
-        y = rect[:, 1]
-        area = 0.5 * abs(sum(x[i] * y[i+1] - x[i+1] * y[i] for i in range(-1, len(x)-1)))
-        total_rect_area += area
-    
-    # 计算占比
-    ratio = (total_rect_area / spiral_area * 100) if spiral_area > 0 else 0.0
-    
+    if widths_per_layer is not None and count_per_layer is not None:
+        for width_val, count_val in zip(widths_per_layer, count_per_layer):
+            if width_val <= 0.0 or count_val <= 0:
+                continue
+            total_rect_area += float(width_val) * rect_thickness_use * int(count_val)
+    elif rectangles:
+        if rect_width is not None:
+            total_rect_area = float(len(rectangles)) * rect_width * rect_thickness_use
+        else:
+            total_rect_area = rect_thickness_use * sum(_estimate_rect_width(rect) for rect in rectangles)
+    elif rect_width is not None and count > 0:
+        total_rect_area = rect_width * rect_thickness_use * count
+
+    ratio = (total_rect_area / spiral_area * 100.0) if spiral_area > 1e-12 else 0.0
+
     return {
         'spiral_area': spiral_area,
         'rectangles_area': total_rect_area,
-        'ratio_percent': ratio
+        'ratio_percent': ratio,
     }
+
+
+def compute_manual_area_curve(layer_lengths: Sequence[float],
+                              rect_gap: float,
+                              radius_value: float,
+                              turn_count: int,
+                              division_min: int = 17,
+                              division_max: int = 100,
+                              rect_thickness: float | None = None,
+                              spiral_thickness: float | None = None) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    计算手动分段模式下的面积占比曲线。
+
+    返回:
+        (divisions_array, ratio_array)
+    """
+    if division_max < division_min:
+        division_min, division_max = division_max, division_min
+
+    layer_lengths = list(layer_lengths)
+    rect_thickness_use = rect_thickness if rect_thickness is not None else rect_thick
+    spiral_thickness_use = spiral_thickness if spiral_thickness is not None else thick
+    if not layer_lengths or turn_count <= 0 or rect_thickness_use <= 0.0:
+        return np.array([]), np.array([])
+
+    spiral_area = _calculate_spiral_area(radius_value, spiral_thickness_use, turn_count)
+    if spiral_area <= 1e-12:
+        return np.array([]), np.array([])
+
+    divisions = np.arange(division_min, division_max + 1, dtype=float)
+    ratios = np.zeros_like(divisions)
+    for idx, div_val in enumerate(divisions):
+        n = int(max(1, round(div_val)))
+        widths = []
+        for length in layer_lengths:
+            width_val = (length / n) - rect_gap
+            widths.append(width_val if width_val > 0.0 else 0.0)
+        if not widths or min(widths) <= 0.0:
+            ratios[idx] = 0.0
+            continue
+        total_area = rect_thickness_use * n * sum(widths)
+        ratios[idx] = (total_area / spiral_area) * 100.0
+
+    return divisions, ratios
 
 def plot_both_spirals(radius: float, thick: float, count: int, 
                      rect_width: float, rect_width_start: float, 
                      width_change_rate: float, rect_gap: float,
-                     save_path: str | None = None):
-    """在一个窗口中显示两个螺旋线"""
-    (poly_x, poly_y), (cx, cy), (theta, r) = spiral_band(radius, thick, count)
+                     save_path: str | None = None,
+                     interactive: bool = False,
+                     constant_mode: str = "fixed_count",
+                     lock_gradient_width: bool = False):
+    """在一个窗口中显示三个螺旋线策略对比图。
     
-    # 创建一个包含两个子图的窗口
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-    
-    # === 左图：固定宽度矩形 ===
-    ax1.fill(poly_x, poly_y, alpha=0.3, color='lightblue', label='Spiral Band')
-    ax1.plot(cx, cy, linewidth=0.8, color="k", label='Center Line')
-    
-    # 生成固定宽度矩形
-    rectangles_fixed = generate_rectangles(theta, r, rect_width, rect_gap, thick)
-    print(f"固定宽度：生成了 {len(rectangles_fixed)} 个矩形")
-    
-    # 计算面积占比
-    area_info_fixed = calculate_area_ratio(radius, thick, count, rectangles_fixed)
-    print(f"固定宽度 - 螺旋带面积: {area_info_fixed['spiral_area']:.4f}")
-    print(f"固定宽度 - 矩形总面积: {area_info_fixed['rectangles_area']:.4f}")
-    print(f"固定宽度 - 占比: {area_info_fixed['ratio_percent']:.2f}%")
-    
-    for rect in rectangles_fixed:
-        rect_closed = np.vstack([rect, rect[0]])
-        ax1.fill(rect_closed[:, 0], rect_closed[:, 1], 
-               alpha=0.7, color='orange', edgecolor='red', linewidth=0.5)
-    
-    # 外接圆参考线
-    t = np.linspace(0, 2*np.pi, 720)
-    ax1.plot(radius*np.cos(t), radius*np.sin(t), linestyle="--", 
-           color="gray", linewidth=0.8, label='Outer Circle')
-    
-    ax1.set_aspect('equal')
-    lim = radius + thick
-    ax1.set_xlim(-lim, lim)
-    ax1.set_ylim(-lim, lim)
-    ax1.set_xlabel("X")
-    ax1.set_ylabel("Y")
-    ax1.set_title(f"Fixed Width Rectangles\nwidth={rect_width}, gap={rect_gap}\n"
-                 f"Area Ratio: {area_info_fixed['ratio_percent']:.2f}%")
-    ax1.legend(loc='upper right', fontsize=8)
-    ax1.grid(True, alpha=0.3)
-    
-    # === 右图：渐变宽度矩形 ===
-    ax2.fill(poly_x, poly_y, alpha=0.3, color='lightblue', label='Spiral Band')
-    ax2.plot(cx, cy, linewidth=0.8, color="k", label='Center Line')
-    
-    # 生成渐变宽度矩形
-    rectangles_gradient = generate_gradient_rectangles_aligned(theta, r, rect_width_start, 
-                                                              width_change_rate, rect_gap, 
-                                                              thick, count)
-    print(f"渐变宽度：生成了 {len(rectangles_gradient)} 个矩形")
-    
-    # 计算面积占比
-    area_info_gradient = calculate_area_ratio(radius, thick, count, rectangles_gradient)
-    print(f"渐变宽度 - 螺旋带面积: {area_info_gradient['spiral_area']:.4f}")
-    print(f"渐变宽度 - 矩形总面积: {area_info_gradient['rectangles_area']:.4f}")
-    print(f"渐变宽度 - 占比: {area_info_gradient['ratio_percent']:.2f}%")
-    
-    # 使用颜色映射
-    colors = plt.cm.rainbow(np.linspace(0, 1, len(rectangles_gradient)))
-    
-    for idx, rect in enumerate(rectangles_gradient):
-        rect_closed = np.vstack([rect, rect[0]])
-        ax2.fill(rect_closed[:, 0], rect_closed[:, 1], 
-               alpha=0.7, color=colors[idx], edgecolor='darkred', linewidth=0.5)
-    
-    # 外接圆参考线
-    ax2.plot(radius*np.cos(t), radius*np.sin(t), linestyle="--", 
-           color="gray", linewidth=0.8, label='Outer Circle')
-    
-    ax2.set_aspect('equal')
-    ax2.set_xlim(-lim, lim)
-    ax2.set_ylim(-lim, lim)
-    ax2.set_xlabel("X")
-    ax2.set_ylabel("Y")
-    ax2.set_title(f"Gradient Width Rectangles (Radially Aligned)\n"
-                 f"width: {rect_width_start} + {width_change_rate}/turn, gap={rect_gap}\n"
-                 f"Area Ratio: {area_info_gradient['ratio_percent']:.2f}%")
-    ax2.legend(loc='upper right', fontsize=8)
-    ax2.grid(True, alpha=0.3)
-    
+    Args:
+        radius: 外接圆半径
+        thick: 螺旋带宽度
+        count: 圈数
+        rect_width: 固定宽度策略的矩形宽度
+        rect_width_start: 渐变策略的起始宽度
+        width_change_rate: 渐变策略的每圈变化量
+        rect_gap: 所有策略共用的矩形间隔
+        save_path: 输出文件路径（可选）
+        interactive: 若为 True，改为展示带 Slider 的交互界面（忽略 save_path）
+        constant_mode: "fixed_count" 或 "outer_layer"（兼容旧值 "outer_width"）
+    """
+    if constant_mode in ("outer_layer", "outer_width"):
+        mode = "outer_layer"
+    elif constant_mode == "fixed_count":
+        mode = "fixed_count"
+    else:
+        mode = "fixed_count"
+
+    if interactive:
+        return interactive_radius_slider(
+            radius_min=radius * 0.2,
+            radius_max=radius * 1.4,
+            radius_init=radius,
+            thick_value=thick,
+            count_value=count,
+            rect_width_value=rect_width,
+            rect_width_start_value=rect_width_start,
+            width_change_rate_value=width_change_rate,
+            rect_gap_value=rect_gap,
+            constant_mode=mode,
+            lock_gradient_width=lock_gradient_width,
+        )
+
+    fig, axes = plt.subplots(1, 4, figsize=(32, 8), constrained_layout=True)
+    ax1, ax2, ax3, ratio_ax = axes
+    for ax in (ax1, ax2, ax3):
+        ax.set_box_aspect(1)
+    ratio_ax.set_box_aspect(1)
+    results = _draw_spiral_panels(
+        ax1, ax2, ax3,
+        radius, thick, count,
+        rect_width, rect_width_start,
+        width_change_rate, rect_gap,
+        constant_mode=mode,
+        lock_gradient_width=(mode == "outer_layer") or lock_gradient_width,
+        constant_count_value=96,
+    )
+
+    ratio_ax.set_xlabel("num_divisions")
+    ratio_ax.set_ylabel("Area %")
+    ratio_ax.grid(True, alpha=0.3)
+    div_min, div_max = AREA_DIVISION_RANGE
+    ratio_ax.set_xlim(div_min, div_max)
+    ratio_ax.set_ylim(0.0, 5.0)
+    ratio_value_text = ratio_ax.text(
+        0.02, 0.92, "", transform=ratio_ax.transAxes, fontsize=10,
+        color='orange', fontweight='bold', ha='left', va='top',
+    )
+    layer_lengths = results.get('layer_lengths', [])
+    turns_effective = len(layer_lengths) if layer_lengths else count
+    ratio_value_text.set_text("")
+    if mode == "fixed_count":
+        divisions, ratios = compute_manual_area_curve(
+            layer_lengths,
+            rect_gap,
+            radius,
+            turns_effective,
+            division_min=div_min,
+            division_max=div_max,
+            rect_thickness=rect_thick,
+            spiral_thickness=thick,
+        )
+        if divisions.size > 0 and ratios.size > 0:
+            ratio_ax.plot(divisions, ratios, color='purple', linewidth=1.6, alpha=0.8)
+            count_val = results.get('count_per_turn')
+            if count_val:
+                count_clamped = max(div_min, min(div_max, count_val))
+                ratio_ax.axvline(count_clamped, color='gray', linestyle='--', linewidth=0.9, alpha=0.7)
+                current_ratio = results.get('constant', {}).get('ratio_percent')
+                if current_ratio is not None:
+                    ratio_ax.plot([count_clamped], [current_ratio],
+                                  marker='o', color='orange', markersize=6)
+                    ratio_value_text.set_text(
+                        f"num_divisions={count_clamped}\narea={current_ratio:.2f}%"
+                    )
+                else:
+                    ratio_value_text.set_text(f"num_divisions={count_clamped}\narea=--")
+                x_min = float(min(divisions[0], count_clamped))
+                x_max = float(max(divisions[-1], count_clamped))
+                ratio_ax.set_xlim(x_min, x_max)
+            max_ratio = float(np.max(ratios))
+            ratio_ax.set_ylim(0.0, max(5.0, max_ratio * 1.1))
+        else:
+            ratio_value_text.set_text("No manual samples")
+        ratio_ax.set_title("Area Ratio vs num_divisions (manual mode)")
+    else:
+        auto_ratio = results.get('constant', {}).get('ratio_percent')
+        auto_count = results.get('count_per_turn')
+        if auto_ratio is not None and auto_count:
+            ratio_value_text.set_text(
+                f"auto divisions={auto_count}\narea={auto_ratio:.2f}%"
+            )
+        else:
+            ratio_value_text.set_text("Auto mode")
+        ratio_ax.set_title("Area Ratio (manual mode only)")
+
     plt.suptitle(f"Spiral Comparison: radius={radius}, thick={thick}, turns={count}", 
                 fontsize=14, fontweight='bold')
-    plt.tight_layout()
     
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
         print(f"已保存图像到: {save_path}")
     plt.show()
+    return results
+
+
+def interactive_radius_slider(radius_min: float = 2.0,
+                              radius_max: float = 8.0,
+                              radius_init: float | None = None,
+                              *,
+                              thick_value: float | None = None,
+                              count_value: int | None = None,
+                              rect_width_value: float | None = None,
+                              rect_width_start_value: float | None = None,
+                              width_change_rate_value: float | None = None,
+                              rect_gap_value: float | None = None,
+                              constant_mode: str = "fixed_count",
+                              lock_gradient_width: bool = False):
+    """
+    使用 Matplotlib Slider 交互调节半径，并观察三种矩形策略的变化。
+    其他参数若未提供，将回落到模块级默认值。
+    """
+    if radius_init is None:
+        radius_init = radius
+    radius_init = max(radius_min, min(radius_max, radius_init))
+
+    thick_use = thick if thick_value is None else thick_value
+    count_use = layer_count if count_value is None else count_value
+    rect_width_use = rect_width if rect_width_value is None else rect_width_value
+    rect_width_start_use = rect_width_start if rect_width_start_value is None else rect_width_start_value
+    width_change_rate_use = width_change_rate if width_change_rate_value is None else width_change_rate_value
+    rect_gap_use = rect_gap if rect_gap_value is None else rect_gap_value
+
+    fig, axes = plt.subplots(1, 4, figsize=(32, 8))
+    ax1, ax2, ax3, ratio_ax = axes
+    plt.subplots_adjust(bottom=0.32, wspace=0.25, top=0.88)
+    for ax in (ax1, ax2, ax3):
+        ax.set_box_aspect(1)
+    ratio_ax.set_box_aspect(1)
+    ratio_ax.set_title("Area Ratio (Rect width × thickness)")
+    ratio_ax.set_xlabel("num_divisions")
+    ratio_ax.set_ylabel("Area %")
+    ratio_ax.grid(True, alpha=0.3)
+    div_min, div_max = AREA_DIVISION_RANGE
+    ratio_ax.set_xlim(div_min, div_max)
+    ratio_ax.set_ylim(0.0, 5.0)
+    ratio_line, = ratio_ax.plot([], [], color='purple', linewidth=1.6, alpha=0.8)
+    ratio_marker, = ratio_ax.plot([], [], marker='o', color='orange', markersize=6, linestyle='None')
+    ratio_marker.set_visible(False)
+    ratio_current_line = ratio_ax.axvline(div_min, color='gray', linestyle='--', linewidth=0.9, alpha=0.7)
+    ratio_current_line.set_visible(False)
+    ratio_value_text = ratio_ax.text(
+        0.02, 0.92, "", transform=ratio_ax.transAxes, fontsize=10,
+        color='orange', fontweight='bold', ha='left', va='top',
+    )
+
+    mode_state = (constant_mode or "").lower()
+    if mode_state == "outer_width":
+        mode_state = "outer_layer"
+    if mode_state not in ("fixed_count", "outer_layer"):
+        mode_state = "fixed_count"
+
+    suptitle = fig.suptitle("", fontsize=14, fontweight='bold')
+
+    slider_ax = fig.add_axes([0.2, 0.20, 0.6, 0.03])
+    radius_slider = Slider(
+        slider_ax,
+        "Radius",
+        radius_min,
+        radius_max,
+        valinit=radius_init,
+        valstep=0.01,
+    )
+
+    division_ax = fig.add_axes([0.2, 0.14, 0.6, 0.03])
+    division_slider = Slider(
+        division_ax,
+        "Divisions",
+        AREA_DIVISION_RANGE[0],
+        AREA_DIVISION_RANGE[1],
+        valinit=96,
+        valstep=1,
+    )
+
+    constant_button_ax = fig.add_axes([0.25, 0.05, 0.5, 0.05])
+    constant_button = Button(constant_button_ax, "")
+
+    _division_slider_updating = False
+
+    def _apply(radius_value: float | None = None):
+        nonlocal _division_slider_updating
+        val = radius_slider.val if radius_value is None else radius_value
+        divisions_val = int(round(division_slider.val))
+        info = _draw_spiral_panels(
+            ax1, ax2, ax3,
+            val, thick_use, count_use,
+            rect_width_use, rect_width_start_use,
+            width_change_rate_use, rect_gap_use,
+            constant_mode=mode_state,
+            lock_gradient_width=(mode_state == "outer_layer"),
+            constant_count_value=divisions_val,
+        )
+        count_actual = info.get('count_per_turn', divisions_val)
+        current_ratio = info.get('constant', {}).get('ratio_percent')
+        layer_lengths = info.get('layer_lengths', [])
+        turns_effective = len(layer_lengths) if layer_lengths else count_use
+        ratio_value_text.set_text("")
+        if mode_state == "fixed_count":
+            divs, ratios = compute_manual_area_curve(
+                layer_lengths,
+                rect_gap_use,
+                val,
+                turns_effective,
+                division_min=div_min,
+                division_max=div_max,
+                rect_thickness=rect_thick,
+                spiral_thickness=thick_use,
+            )
+            has_curve = divs.size > 0 and ratios.size > 0
+            marker_x = count_actual if count_actual else divisions_val
+            marker_clamped = None
+            if marker_x:
+                marker_clamped = max(div_min, min(div_max, marker_x))
+
+            if has_curve:
+                ratio_line.set_data(divs, ratios)
+                if marker_clamped is not None:
+                    x_min = float(min(divs[0], marker_clamped))
+                    x_max = float(max(divs[-1], marker_clamped))
+                else:
+                    x_min = float(divs[0])
+                    x_max = float(divs[-1])
+                ratio_ax.set_xlim(x_min, x_max)
+                max_ratio = float(np.max(ratios))
+                ratio_ax.set_ylim(0.0, max(5.0, max_ratio * 1.1))
+            else:
+                ratio_line.set_data([], [])
+                ratio_ax.set_xlim(div_min, div_max)
+                ratio_ax.set_ylim(0.0, 5.0)
+
+            if marker_clamped is not None:
+                ratio_current_line.set_xdata([marker_clamped, marker_clamped])
+                ratio_current_line.set_visible(True)
+                if current_ratio is not None:
+                    ratio_marker.set_data([marker_clamped], [current_ratio])
+                    ratio_marker.set_visible(True)
+                    ratio_value_text.set_text(
+                        f"num_divisions={marker_clamped}\narea={current_ratio:.2f}%"
+                    )
+                else:
+                    ratio_marker.set_data([], [])
+                    ratio_marker.set_visible(False)
+                    ratio_value_text.set_text(f"num_divisions={marker_clamped}\narea=--")
+            else:
+                ratio_current_line.set_visible(False)
+                ratio_marker.set_visible(False)
+                ratio_value_text.set_text("No manual value")
+            ratio_ax.set_title("Area Ratio vs num_divisions (manual mode)")
+        else:
+            ratio_line.set_data([], [])
+            ratio_marker.set_data([], [])
+            ratio_marker.set_visible(False)
+            ratio_current_line.set_visible(False)
+            ratio_ax.set_xlim(div_min, div_max)
+            ratio_ax.set_ylim(0.0, 5.0)
+            auto_ratio = info.get('constant', {}).get('ratio_percent')
+            if count_actual and auto_ratio is not None:
+                ratio_value_text.set_text(
+                    f"auto divisions={count_actual}\narea={auto_ratio:.2f}%"
+                )
+            else:
+                ratio_value_text.set_text("Auto mode")
+            ratio_ax.set_title("Area Ratio (manual mode only)")
+
+        if mode_state == "outer_layer" and count_actual:
+            if abs(division_slider.val - count_actual) > 1e-6:
+                _division_slider_updating = True
+                division_slider.set_val(count_actual)
+                _division_slider_updating = False
+        _update_controls(count_actual)
+        suptitle.set_text(
+            f"Spiral Comparison: radius={val:.3f}, thick={thick_use}, turns={count_use}"
+        )
+        fig.canvas.draw_idle()
+        return info
+
+    def _update_controls(actual_count: int | None = None):
+        mode_text = "Mode: B (Fixed Count)" if mode_state == "fixed_count" else "Mode: A (Outer Derived)"
+        constant_button.label.set_text(mode_text)
+        if mode_state == "outer_layer":
+            label = f"Divisions (auto={actual_count})" if actual_count else "Divisions (auto)"
+            division_slider.label.set_text(label)
+        else:
+            division_slider.label.set_text("Divisions (17-100)")
+        fig.canvas.draw_idle()
+
+    def _on_radius_change(val):
+        _apply(val)
+
+    def _toggle_constant(event):
+        nonlocal mode_state
+        mode_state = "outer_layer" if mode_state == "fixed_count" else "fixed_count"
+        _update_controls()
+        _apply()
+
+    def _on_division_change(val):
+        if _division_slider_updating or mode_state == "outer_layer":
+            return
+        _apply()
+
+    radius_slider.on_changed(_on_radius_change)
+    division_slider.on_changed(_on_division_change)
+    constant_button.on_clicked(_toggle_constant)
+
+    _update_controls()
+    _apply(radius_init)
+    plt.show()
+    return radius_slider
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("绘制螺旋线对比图...")
+    print("绘制螺旋线对比图（按需拖动滑块调整半径）...")
     print("=" * 50)
-    plot_both_spirals(radius, thick, count, rect_width, rect_width_start, 
-                     width_change_rate, rect_gap, "spiral_comparison.png")
+    interactive_radius_slider()

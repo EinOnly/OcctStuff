@@ -1,8 +1,9 @@
 import math
+import os
 from pattern import Pattern
 from assamly import AssemblyBuilder
 from step import StepExporter
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
@@ -74,7 +75,7 @@ class Slider(QWidget):
         
         # QLineEdit with double validator
         self.input_box = QLineEdit()
-        self.input_box.setText(f"{self.value:.2f}")
+        self.input_box.setText(f"{self.value:.5f}")
         self.input_box.setMaximumWidth(80)
         self.input_box.setAlignment(Qt.AlignLeft)
         self.input_box.setStyleSheet("""
@@ -86,7 +87,7 @@ class Slider(QWidget):
                 font-size: 12px;
             }
         """)
-        validator = QDoubleValidator(min_val, max_val, 2)
+        validator = QDoubleValidator(min_val, max_val, 5)
         self.input_box.setValidator(validator)
         
         # Layout
@@ -136,7 +137,7 @@ class Slider(QWidget):
         """Handle slider movement - immediate update"""
         new_value = self._slider_to_value(slider_pos)
         self.value = new_value
-        self.input_box.setText(f"{new_value:.2f}")
+        self.input_box.setText(f"{new_value:.5f}")
         self.valueChanged.emit(self.label_text, new_value)
     
     def _on_input_text_changed(self, text):
@@ -154,7 +155,7 @@ class Slider(QWidget):
                 self.valueChanged.emit(self.label_text, new_value)
         except ValueError:
             # Invalid input, revert to current value
-            self.input_box.setText(f"{self.value:.2f}")
+            self.input_box.setText(f"{self.value:.5f}")
     
     def _on_input_finished(self):
         """Handle input box editing finished (Enter or focus lost)"""
@@ -166,10 +167,10 @@ class Slider(QWidget):
                 self.valueChanged.emit(self.label_text, new_value)
             else:
                 # Out of range, revert
-                self.input_box.setText(f"{self.value:.2f}")
+                self.input_box.setText(f"{self.value:.5f}")
         except ValueError:
             # Invalid input, revert to current value
-            self.input_box.setText(f"{self.value:.2f}")
+            self.input_box.setText(f"{self.value:.5f}")
     
     def set_value(self, new_value):
         """Programmatically set the slider value, clamping to valid range"""
@@ -177,7 +178,7 @@ class Slider(QWidget):
         clamped_value = max(self.min_val, min(self.max_val, new_value))
         self.value = clamped_value
         self.slider.setValue(self._value_to_slider(clamped_value))
-        self.input_box.setText(f"{clamped_value:.2f}")
+        self.input_box.setText(f"{clamped_value:.5f}")
     
     def set_range(self, new_min, new_max, new_step=None):
         """Update the slider's min/max range (and optionally step)"""
@@ -187,7 +188,7 @@ class Slider(QWidget):
             self.step = new_step
         self._update_slider_bounds()
         # Update validator
-        self.input_box.setValidator(QDoubleValidator(new_min, new_max, 2))
+        self.input_box.setValidator(QDoubleValidator(new_min, new_max, 5))
         # Clamp current value to new range
         if self.value < new_min:
             self.set_value(new_min)
@@ -202,84 +203,92 @@ class Slider(QWidget):
         return self.value
 
 class Visualizer(QWidget):
-    def __init__(self,
-                 pattern: Pattern | None = None,
-                 height=200,
-                 multiple=2.5,
-                 spacing=10):
+    def __init__(self, height=200, multiple=2.5, spacing=10):
+
         super().__init__()
         self.height = height
         self.spacing = spacing
         self.multiple = multiple
         self.sliders = []
         self.slider_map = {}
+        self.assembly_view_limits = None
         
         # OCCT Step exporter
         self.step_exporter = StepExporter(thickness=0.047)
+        self.pattern = Pattern(width=4.702, height=7.5)
         self.assembly_builder = AssemblyBuilder(
-            pattern=pattern,
+            pattern=self.pattern,
             step_exporter=self.step_exporter,
         )
-        if pattern is None:
-            self.assembly_builder.set_dimensions(width=4.702, height=7.5)
         self.assembly_params = self.assembly_builder.assembly
         self.spiral_params = self.assembly_builder.spiral
         self.thick = 0.544  # Default conductor width used for coil spacing
         self.assembly_params.coil_width = self.thick
+        self.assembly_params.spacing = 0.06000
         self.assembly_params.update_offset_from_coil()
-        self.assembly_params.count = 18
+        self.assembly_params.count = 8
+        self.spacing_input = None
         
         # Initialize the main window
         self.setWindowTitle("Motor Pattern Visualizer")
         
-        # Create main vertical layout (for three rows)
-        main_layout = QVBoxLayout()
+        # Create grid layout to keep rows and columns aligned
+        main_layout = QGridLayout()
         main_layout.setSpacing(spacing)
         main_layout.setContentsMargins(spacing, spacing, spacing, spacing)
         
-        # First row: Input + Pattern + Chart
-        first_row_layout = QHBoxLayout()
-        first_row_layout.setSpacing(spacing)
-        first_row_layout.setContentsMargins(0, 0, 0, 0)
-        
+        # First-row widgets share a square width
+        column_width = height
+        chart_width = column_width
+        assembly_width = column_width * 2 + spacing
+
         # Create three windows (QWidgets)
         self.windowInput = QWidget()
-        self.windowInput.setMinimumSize(height, height)
-        self.windowInput.setMaximumSize(height, height)
+        self.windowInput.setMinimumSize(column_width, height)
+        self.windowInput.setMaximumSize(column_width, height)
         self.windowInput.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
         
         # Create matplotlib canvas for pattern window
         self.pattern_figure = Figure(figsize=(height/100, height/100), dpi=100)
         self.pattern_canvas = FigureCanvas(self.pattern_figure)
         self.pattern_ax = self.pattern_figure.add_subplot(111)
-        self.pattern_canvas.setMinimumSize(height, height)
-        self.pattern_canvas.setMaximumSize(height, height)
+        self.pattern_canvas.setMinimumSize(column_width, height)
+        self.pattern_canvas.setMaximumSize(column_width, height)
         
         self.windowPattern = QWidget()
-        self.windowPattern.setMinimumSize(height, height)
-        self.windowPattern.setMaximumSize(height, height)
+        self.windowPattern.setMinimumSize(column_width, height)
+        self.windowPattern.setMaximumSize(column_width, height)
         pattern_layout = QVBoxLayout()
         pattern_layout.setContentsMargins(0, 0, 0, 0)
         pattern_layout.addWidget(self.pattern_canvas)
         self.windowPattern.setLayout(pattern_layout)
         
-        # Create matplotlib canvas for chart window (new independent window)
+        # Create matplotlib canvas for chart display
         self.chart_figure = Figure(figsize=(height/100, height/100), dpi=100)
         self.chart_canvas = FigureCanvas(self.chart_figure)
         self.chart_ax = self.chart_figure.add_subplot(111)
-        self.chart_canvas.setMinimumSize(height, height)
-        self.chart_canvas.setMaximumSize(height, height)
-        
+        self.chart_canvas.setMinimumSize(chart_width, height)
+        self.chart_canvas.setMaximumSize(chart_width, height)
+
         self.windowChart = QWidget()
-        self.windowChart.setMinimumSize(height, height)
-        self.windowChart.setMaximumSize(height, height)
+        self.windowChart.setMinimumSize(chart_width, height)
+        self.windowChart.setMaximumSize(chart_width, height)
         chart_layout = QVBoxLayout()
         chart_layout.setContentsMargins(0, 0, 0, 0)
         chart_layout.addWidget(self.chart_canvas)
         self.windowChart.setLayout(chart_layout)
+
+        # Create a dedicated slider panel window (occupies former chart slot)
+        self.windowSliders = QWidget()
+        self.windowSliders.setMinimumSize(height, height)
+        self.windowSliders.setMaximumSize(height, height)
+        self.windowSliders.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
+        self.slider_layout = QVBoxLayout()
+        self.slider_layout.setContentsMargins(5, 5, 5, 5)
+        self.slider_layout.setSpacing(5)
+        self.windowSliders.setLayout(self.slider_layout)
         
         # Create matplotlib canvas for assembly window
-        assembly_width = int(height * multiple)
         self.assembly_figure = Figure(figsize=(assembly_width/100, height/100), dpi=100)
         self.assembly_canvas = FigureCanvas(self.assembly_figure)
         self.assembly_ax = self.assembly_figure.add_subplot(111)
@@ -293,6 +302,7 @@ class Visualizer(QWidget):
         assembly_layout.setContentsMargins(0, 0, 0, 0)
         assembly_layout.addWidget(self.assembly_canvas)
         self.windowAssamble.setLayout(assembly_layout)
+        self.assembly_canvas.mpl_connect('scroll_event', self._on_assembly_scroll)
         
         # Spiral placement parameters (defaults follow curve.py constants)
         self.spiral_radius = None
@@ -308,47 +318,29 @@ class Visualizer(QWidget):
         self._build_input_panel()
         self._build_slider_panel()
         
-        # Add windows to first row layout (Input + Pattern + Chart)
-        first_row_layout.addWidget(self.windowInput)
-        first_row_layout.addWidget(self.windowPattern)
-        first_row_layout.addWidget(self.windowChart)
+        # Add widgets to grid layout for aligned columns
+        main_layout.addWidget(self.windowInput, 0, 0)
+        main_layout.addWidget(self.windowPattern, 0, 1)
+        main_layout.addWidget(self.windowSliders, 0, 2)
+        main_layout.addWidget(self.windowAssamble, 1, 0, 1, 2)
+        main_layout.addWidget(self.windowChart, 1, 2)
         
-        # Second row: Assembly (full width, showing multiple patterns)
-        second_row_layout = QHBoxLayout()
-        second_row_layout.setSpacing(spacing)
-        second_row_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setColumnMinimumWidth(0, column_width)
+        main_layout.setColumnMinimumWidth(1, column_width)
+        main_layout.setColumnMinimumWidth(2, chart_width)
         
-        # Adjust assembly to full width (3 windows + 2 spacings)
-        assembly_full_width = height * 3 + spacing * 2
-        self.windowAssamble.setMinimumSize(assembly_full_width, height)
-        self.windowAssamble.setMaximumSize(assembly_full_width, height)
-        self.assembly_canvas.setMinimumSize(assembly_full_width, height)
-        self.assembly_canvas.setMaximumSize(assembly_full_width, height)
-        
-        second_row_layout.addWidget(self.windowAssamble)
-        
-        # Third row: 3D OCCT viewer (full width)
-        third_row_layout = QHBoxLayout()
-        third_row_layout.setSpacing(spacing)
-        third_row_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create 3D viewer widget (full width, same as assembly)
+        # Third row: 3D OCCT viewer spans all columns
         self.viewer3d = qtViewer3d()
-        self.viewer3d.setMinimumSize(assembly_full_width, height)
-        
-        # Add 3D viewer to third row (full width)
-        third_row_layout.addWidget(self.viewer3d)
-        
-        # Add all three rows to main layout
-        main_layout.addLayout(first_row_layout)
-        main_layout.addLayout(second_row_layout)
-        main_layout.addLayout(third_row_layout)
+        viewer_width = assembly_width + spacing + chart_width
+        self.viewer3d.setMinimumSize(viewer_width, height)
+        main_layout.addWidget(self.viewer3d, 2, 0, 1, 3)
         
         self.setLayout(main_layout)
         
         # Adjust window size (three rows now)
         # Width: 3 windows + 2 spacings between them + 2 spacings for margins
-        total_width = height * 3 + spacing * 4
+        first_row_width = column_width * 3 + spacing * 2
+        total_width = first_row_width + spacing * 2
         # Height: 3 rows + 2 spacings between them + 2 spacings for margins
         total_height = height * 3 + spacing * 4
         self.setMinimumSize(total_width, total_height)
@@ -361,12 +353,18 @@ class Visualizer(QWidget):
     def keyPressEvent(self, event):
         """Handle keyboard shortcuts for 3D view control"""
         key = event.key()
+        viewer_focus = self.viewer3d.hasFocus()
         
         # View switching: 1=Top, 2=Front, 3=Side
         if key == Qt.Key_1:
-            # Top view (looking down Z axis)
-            self.viewer3d._display.View_Top()
-            print("View: Top (Z-axis)")
+            if viewer_focus:
+                # Top view (looking down Z axis)
+                self.viewer3d._display.View_Top()
+                print("View: Top (Z-axis)")
+            else:
+                self._reset_assembly_view()
+                self._draw_assembly()
+                print("Assembly view: Centered")
         elif key == Qt.Key_2:
             # Front view (looking along Y axis)
             self.viewer3d._display.View_Front()
@@ -376,29 +374,50 @@ class Visualizer(QWidget):
             self.viewer3d._display.View_Right()
             print("View: Side (X-axis)")
         
+        elif key == Qt.Key_0:
+            self._reset_assembly_view()
+            self._draw_assembly()
+            print("Assembly view: Reset zoom")
+        
         # Pan controls with arrow keys
         elif key == Qt.Key_Left:
-            self.viewer3d._display.Pan(-50, 0)
-            print("Pan: Left")
+            if viewer_focus:
+                self.viewer3d._display.Pan(-50, 0)
+                print("Pan: Left (3D)")
+            else:
+                self._pan_assembly(-0.1, 0.0)
         elif key == Qt.Key_Right:
-            self.viewer3d._display.Pan(50, 0)
-            print("Pan: Right")
+            if viewer_focus:
+                self.viewer3d._display.Pan(50, 0)
+                print("Pan: Right (3D)")
+            else:
+                self._pan_assembly(0.1, 0.0)
         elif key == Qt.Key_Up:
-            self.viewer3d._display.Pan(0, 50)
-            print("Pan: Up")
+            if viewer_focus:
+                self.viewer3d._display.Pan(0, 50)
+                print("Pan: Up (3D)")
+            else:
+                self._pan_assembly(0.0, 0.1)
         elif key == Qt.Key_Down:
-            self.viewer3d._display.Pan(0, -50)
-            print("Pan: Down")
+            if viewer_focus:
+                self.viewer3d._display.Pan(0, -50)
+                print("Pan: Down (3D)")
+            else:
+                self._pan_assembly(0.0, -0.1)
         
         # Zoom controls
-        elif key == Qt.Key_Plus or key == Qt.Key_Equal:
-            # Zoom in
-            self.viewer3d._display.ZoomFactor(1.2)
-            print("Zoom: In")
-        elif key == Qt.Key_Minus or key == Qt.Key_Underscore:
-            # Zoom out
-            self.viewer3d._display.ZoomFactor(0.8)
-            print("Zoom: Out")
+        elif key in (Qt.Key_Plus, Qt.Key_Equal):
+            if viewer_focus:
+                self.viewer3d._display.ZoomFactor(1.2)
+                print("Zoom: In (3D)")
+            else:
+                self._zoom_assembly(0.9)
+        elif key in (Qt.Key_Minus, Qt.Key_Underscore):
+            if viewer_focus:
+                self.viewer3d._display.ZoomFactor(0.8)
+                print("Zoom: Out (3D)")
+            else:
+                self._zoom_assembly(1.0 / 0.9)
         
         # R = Reset view (fit all)
         elif key == Qt.Key_R:
@@ -415,7 +434,7 @@ class Visualizer(QWidget):
             super().keyPressEvent(event)
     
     def _build_input_panel(self):
-        """Build input boxes for width, height, and thick parameters."""
+        """Build input boxes for width, height, thick, and spacing parameters."""
         # Create a container widget for the input panel
         input_panel = QWidget()
         input_panel.setStyleSheet("background-color: white; border: 1px solid #ccc; border-radius: 3px;")
@@ -496,6 +515,29 @@ class Visualizer(QWidget):
         thick_layout.addWidget(thick_label)
         thick_layout.addWidget(self.thick_input, 1)  # Stretch factor 1
         panel_layout.addLayout(thick_layout)
+
+        # Spacing input
+        spacing_layout = QHBoxLayout()
+        spacing_layout.setSpacing(5)
+        spacing_label = QLabel("Spacing:")
+        spacing_label.setMinimumWidth(45)
+        spacing_label.setStyleSheet("font-size: 10px; color: #000;")
+        self.spacing_input = QLineEdit()
+        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
+        self.spacing_input.setStyleSheet("""
+            QLineEdit { 
+                border: 1px solid #ccc;
+                padding: 3px; 
+                background-color: white;
+                color: #000;
+                font-size: 10px;
+            }
+        """)
+        self.spacing_input.setValidator(QDoubleValidator(0.0, 10.0, 5))
+        self.spacing_input.editingFinished.connect(self._on_spacing_changed)
+        spacing_layout.addWidget(spacing_label)
+        spacing_layout.addWidget(self.spacing_input, 1)
+        panel_layout.addLayout(spacing_layout)
         
         # All buttons in a horizontal layout (3 columns)
         button_row = QHBoxLayout()
@@ -602,11 +644,12 @@ class Visualizer(QWidget):
             if new_width > 0:
                 # Reset pattern with new dimensions
                 self.assembly_builder.set_dimensions(width=new_width)
+                self._reset_assembly_view()
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
                 self._rebuild_ui_without_chart()
         except ValueError:
-            self.width_input.setText(f"{self.assembly_builder.width:.3f}")
+            self.width_input.setText(f"{self.assembly_builder.width:.5f}")
     
     def _on_height_changed(self):
         """Handle height input change - reset pattern and mark for recalculation."""
@@ -615,11 +658,12 @@ class Visualizer(QWidget):
             if new_height > 0:
                 # Reset pattern with new dimensions
                 self.assembly_builder.set_dimensions(height=new_height)
+                self._reset_assembly_view()
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
                 self._rebuild_ui_without_chart()
         except ValueError:
-            self.height_input.setText(f"{self.assembly_builder.height:.3f}")
+            self.height_input.setText(f"{self.assembly_builder.height:.5f}")
     
     def _on_thick_changed(self):
         """Handle thick input change - update assembly offset, but don't recalculate yet."""
@@ -629,18 +673,24 @@ class Visualizer(QWidget):
                 self.thick = new_thick
                 self.assembly_params.coil_width = self.thick
                 self.assembly_params.update_offset_from_coil()
-                if 'offset' in self.slider_map:
-                    slider = self.slider_map['offset']
-                    slider.set_range(
-                        max(0.01, self.assembly_params.coil_width * 0.5),
-                        max(self.assembly_params.offset * 2.0, self.assembly_builder.width * 2.0, 1.0),
-                        slider.step
-                    )
-                    slider.set_value(self.assembly_params.offset)
+                self._reset_assembly_view()
                 # Don't trigger chart update - wait for calculate button
                 self._update_views_without_chart()
         except ValueError:
-            self.thick_input.setText(f"{self.thick:.3f}")
+            self.thick_input.setText(f"{self.thick:.5f}")
+
+    def _on_spacing_changed(self):
+        """Handle spacing input change - update assembly spacing and offset."""
+        try:
+            new_spacing = float(self.spacing_input.text())
+            if new_spacing >= 0.0:
+                self.assembly_params.spacing = new_spacing
+                self.assembly_params.update_offset_from_coil()
+                self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
+                self._reset_assembly_view()
+                self._update_views_without_chart()
+        except ValueError:
+            self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
     
     def _on_calculate_clicked(self):
         """Handle calculate button click - recalculate resistance and update chart."""
@@ -657,8 +707,10 @@ class Visualizer(QWidget):
     def _rebuild_ui(self):
         """Rebuild UI after dimension changes (with full chart update)."""
         # Update input boxes
-        self.width_input.setText(f"{self.assembly_builder.width:.3f}")
-        self.height_input.setText(f"{self.assembly_builder.height:.3f}")
+        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
+        self.thick_input.setText(f"{self.thick:.5f}")
+        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -672,8 +724,10 @@ class Visualizer(QWidget):
     def _rebuild_ui_without_chart(self):
         """Rebuild UI after dimension changes (skip chart calculation)."""
         # Update input boxes
-        self.width_input.setText(f"{self.assembly_builder.width:.3f}")
-        self.height_input.setText(f"{self.assembly_builder.height:.3f}")
+        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
+        self.thick_input.setText(f"{self.thick:.5f}")
+        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -758,9 +812,9 @@ class Visualizer(QWidget):
             # Open file dialog
             filename, _ = QFileDialog.getSaveFileName(
                 self,
-                "Save STEP File",
+                "Save Geometry",
                 "motor_pattern_array.step",
-                "STEP Files (*.step *.stp);;All Files (*)"
+                "STEP Files (*.step *.stp);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
             )
             
             if filename:
@@ -775,8 +829,16 @@ class Visualizer(QWidget):
                 for shape in all_shapes:
                     builder.Add(compound, shape)
                 
-                self.step_exporter.save_step(filename, shape=compound)
-                print(f"Saved STEP file: {filename} (array with {len(all_shapes)} shapes)")
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in ('.stl',):
+                    self.step_exporter.save_stl(filename, shape=compound)
+                    print(f"Saved STL file: {filename} (array with {len(all_shapes)} shapes)")
+                elif ext in ('.obj',):
+                    self.step_exporter.save_obj(filename, shape=compound)
+                    print(f"Saved OBJ file: {filename} (array with {len(all_shapes)} shapes)")
+                else:
+                    self.step_exporter.save_step(filename, shape=compound)
+                    print(f"Saved STEP file: {filename} (array with {len(all_shapes)} shapes)")
                 
         except Exception as e:
             print(f"Error saving STEP file: {e}")
@@ -785,10 +847,9 @@ class Visualizer(QWidget):
     
     def _build_slider_panel(self):
         """Rebuild parameter sliders according to current pattern mode (excluding width and height)."""
-        # Remove existing slider widgets (keep input panel)
-        # Start from index 1 to skip the input panel widget
-        while self.input_layout.count() > 1:
-            item = self.input_layout.takeAt(1)
+        # Remove existing slider widgets
+        while self.slider_layout.count() > 0:
+            item = self.slider_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -814,21 +875,9 @@ class Visualizer(QWidget):
             slider.valueChanged.connect(self._on_slider_changed)
             self.sliders.append(slider)
             self.slider_map[label] = slider
-            self.input_layout.addWidget(slider)
+            self.slider_layout.addWidget(slider)
 
-        # Assembly spacing / count controls
-        offset_slider = Slider(
-            label='offset',
-            min_val=max(0.01, self.assembly_params.coil_width * 0.5),
-            max_val=max(self.assembly_params.offset * 2.0, self.assembly_builder.width * 2.0, 1.0),
-            initial=self.assembly_params.offset,
-            step=0.01
-        )
-        offset_slider.valueChanged.connect(self._on_assembly_slider_changed)
-        self.sliders.append(offset_slider)
-        self.slider_map['offset'] = offset_slider
-        self.input_layout.addWidget(offset_slider)
-
+        # Assembly count control
         count_slider = Slider(
             label='count',
             min_val=1,
@@ -839,9 +888,9 @@ class Visualizer(QWidget):
         count_slider.valueChanged.connect(self._on_assembly_slider_changed)
         self.sliders.append(count_slider)
         self.slider_map['count'] = count_slider
-        self.input_layout.addWidget(count_slider)
+        self.slider_layout.addWidget(count_slider)
 
-        self.input_layout.addStretch()
+        self.slider_layout.addStretch()
 
     def _on_slider_changed(self, label, value):
         """Handle slider value changes - update pattern and refresh views (without expensive calculations)"""
@@ -862,10 +911,9 @@ class Visualizer(QWidget):
     
     def _on_assembly_slider_changed(self, label, value):
         """Handle assembly slider changes - update assembly parameters and refresh"""
-        if label == 'offset':
-            self.assembly_params.offset = max(0.0, value)
-        elif label == 'count':
+        if label == 'count':
             self.assembly_params.count = int(value)
+            self._reset_assembly_view()
         
         # Only redraw assembly, don't auto-update 3D
         self._draw_assembly()
@@ -912,6 +960,81 @@ class Visualizer(QWidget):
         self._draw_pattern()
         self._draw_assembly()
         # Don't auto-update 3D model - only update when 3D button is clicked
+
+    def _reset_assembly_view(self):
+        """Clear stored assembly view limits so the next draw uses defaults."""
+        self.assembly_view_limits = None
+
+    def _pan_assembly(self, dx_fraction: float, dy_fraction: float):
+        """Pan the assembly view by a fraction of the current window."""
+        if self.assembly_view_limits is None:
+            current_xlim = self.assembly_ax.get_xlim()
+            current_ylim = self.assembly_ax.get_ylim()
+            self.assembly_view_limits = (current_xlim, current_ylim)
+
+        x_limits, y_limits = self.assembly_view_limits
+        range_x = x_limits[1] - x_limits[0]
+        range_y = y_limits[1] - y_limits[0]
+
+        dx = range_x * dx_fraction
+        dy = range_y * dy_fraction
+
+        new_xlim = (x_limits[0] + dx, x_limits[1] + dx)
+        new_ylim = (y_limits[0] + dy, y_limits[1] + dy)
+
+        self.assembly_view_limits = (new_xlim, new_ylim)
+        self.assembly_ax.set_xlim(*new_xlim)
+        self.assembly_ax.set_ylim(*new_ylim)
+        self.assembly_canvas.draw_idle()
+
+    def _zoom_assembly(self, factor: float, x_center: float | None = None, y_center: float | None = None):
+        """Apply zoom to the assembly view."""
+        if factor <= 0:
+            return
+
+        if self.assembly_view_limits is None:
+            current_xlim = self.assembly_ax.get_xlim()
+            current_ylim = self.assembly_ax.get_ylim()
+        else:
+            current_xlim, current_ylim = self.assembly_view_limits
+
+        x_center = x_center if x_center is not None else (current_xlim[0] + current_xlim[1]) / 2.0
+        y_center = y_center if y_center is not None else (current_ylim[0] + current_ylim[1]) / 2.0
+
+        min_range = 1e-4
+        current_range_x = max(current_xlim[1] - current_xlim[0], min_range)
+        current_range_y = max(current_ylim[1] - current_ylim[0], min_range)
+
+        new_range_x = max(current_range_x * factor, min_range)
+        new_range_y = max(current_range_y * factor, min_range)
+
+        new_xlim = (x_center - new_range_x / 2.0, x_center + new_range_x / 2.0)
+        new_ylim = (y_center - new_range_y / 2.0, y_center + new_range_y / 2.0)
+
+        self.assembly_view_limits = (new_xlim, new_ylim)
+        self.assembly_ax.set_xlim(*new_xlim)
+        self.assembly_ax.set_ylim(*new_ylim)
+        self.assembly_canvas.draw_idle()
+
+    def _on_assembly_scroll(self, event):
+        """Handle mouse wheel zooming on the assembly canvas."""
+        if event.inaxes != self.assembly_ax:
+            return
+
+        step = getattr(event, 'step', 0)
+        if step == 0:
+            return
+
+        base_scale = 0.9
+        scale = base_scale ** abs(step)
+        if step < 0:
+            scale = 1.0 / scale
+
+        self._zoom_assembly(
+            factor=scale,
+            x_center=event.xdata,
+            y_center=event.ydata
+        )
     
     def _update_3d_model(self):
         """Update the 3D model in the viewer when pattern changes."""
@@ -1054,6 +1177,7 @@ class Visualizer(QWidget):
         
         instances = self.assembly_builder.build_2d_instances()
         if not instances:
+            self.assembly_view_limits = None
             self.assembly_canvas.draw()
             return
 
@@ -1080,9 +1204,10 @@ class Visualizer(QWidget):
         # Set equal aspect ratio
         self.assembly_ax.set_aspect('equal')
         
-        # Calculate view bounds - use fixed width based on window aspect ratio
-        # Assembly window width is height * multiple, so calculate the corresponding data width
-        assembly_aspect = self.multiple  # width/height ratio of the window
+        # Calculate view bounds using current canvas aspect ratio (fallback to grid-defined width)
+        canvas_width = self.assembly_canvas.width() or (self.height * 2 + self.spacing)
+        canvas_height = self.assembly_canvas.height() or self.height
+        assembly_aspect = canvas_width / max(1, canvas_height)
         view_height = self.assembly_builder.height * 1.1  # Add 10% margin
         view_width = view_height * assembly_aspect  # Match window aspect ratio
         
@@ -1091,9 +1216,16 @@ class Visualizer(QWidget):
         content_width = last_start + self.assembly_builder.width
         center_x = content_width / 2
         
-        # Set view limits to fill the entire window width
-        self.assembly_ax.set_xlim(center_x - view_width/2, center_x + view_width/2)
-        self.assembly_ax.set_ylim(-view_height * 0.05, view_height * 0.95)
+        default_xlim = (center_x - view_width/2, center_x + view_width/2)
+        default_ylim = (-view_height * 0.05, view_height * 0.95)
+
+        if self.assembly_view_limits is None:
+            self.assembly_view_limits = (default_xlim, default_ylim)
+
+        x_limits, y_limits = self.assembly_view_limits
+
+        self.assembly_ax.set_xlim(*x_limits)
+        self.assembly_ax.set_ylim(*y_limits)
         
         # Remove axis labels and ticks
         self.assembly_ax.set_xticks([])
@@ -1165,7 +1297,7 @@ class Visualizer(QWidget):
             original_value = state_snapshot['exponent']
             current_exp = exponent_start
             try:
-                while current_exp <= exponent_end + 1e-9:
+                while current_exp <= exponent_end:
                     # Restore original geometry before applying a new exponent
                     self.assembly_builder.restore_pattern(state_snapshot)
                     self.assembly_builder.set_pattern_variable('exponent', current_exp)

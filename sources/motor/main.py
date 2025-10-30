@@ -50,8 +50,7 @@ def main():
         app = QApplication(sys.argv)
     
     # Create pattern and visualizer
-    pattern = Pattern(width=4.702, height=7.5)
-    visualizer = Visualizer(pattern=pattern, height=300, multiple=2.5, spacing=10)
+    visualizer = Visualizer(height=300, multiple=2.5, spacing=10)
     
     # Show the interactive application
     visualizer.show()
