@@ -1,7 +1,7 @@
 import math
 from pattern import Pattern
-from step import StepExporter, SpiralSurfaceBuilder
-from curve import SpiralMapper
+from assamly import AssemblyBuilder
+from step import StepExporter
 from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QDoubleValidator
@@ -202,23 +202,32 @@ class Slider(QWidget):
         return self.value
 
 class Visualizer(QWidget):
-    def __init__(self, 
-        pattern: Pattern = None,
-        height=200, 
-        multiple=2.5, 
-        spacing=10
-    ):
+    def __init__(self,
+                 pattern: Pattern | None = None,
+                 height=200,
+                 multiple=2.5,
+                 spacing=10):
         super().__init__()
         self.height = height
         self.spacing = spacing
         self.multiple = multiple
-
-        self.pattern = pattern if pattern else Pattern()
         self.sliders = []
         self.slider_map = {}
         
         # OCCT Step exporter
         self.step_exporter = StepExporter(thickness=0.047)
+        self.assembly_builder = AssemblyBuilder(
+            pattern=pattern,
+            step_exporter=self.step_exporter,
+        )
+        if pattern is None:
+            self.assembly_builder.set_dimensions(width=4.702, height=7.5)
+        self.assembly_params = self.assembly_builder.assembly
+        self.spiral_params = self.assembly_builder.spiral
+        self.thick = 0.544  # Default conductor width used for coil spacing
+        self.assembly_params.coil_width = self.thick
+        self.assembly_params.update_offset_from_coil()
+        self.assembly_params.count = 18
         
         # Initialize the main window
         self.setWindowTitle("Motor Pattern Visualizer")
@@ -285,13 +294,6 @@ class Visualizer(QWidget):
         assembly_layout.addWidget(self.assembly_canvas)
         self.windowAssamble.setLayout(assembly_layout)
         
-        # Store offset and count for assembly
-        self.thick = 0.544  # Default thickness
-        self.assembly_offset = self.thick + 0.05  # Auto add 0.05
-        self.assembly_count = 18
-        
-        # Twist mode - flip bottom half horizontally at pattern height center
-        self.twist_enabled = False
         # Spiral placement parameters (defaults follow curve.py constants)
         self.spiral_radius = None
         self.spiral_thickness = None
@@ -433,7 +435,7 @@ class Visualizer(QWidget):
         width_label.setMinimumWidth(45)
         width_label.setStyleSheet("font-size: 10px; color: #000;")
         self.width_input = QLineEdit()
-        self.width_input.setText(f"{self.pattern.width:.5f}")
+        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
         self.width_input.setStyleSheet("""
             QLineEdit { 
                 border: 1px solid #ccc;
@@ -456,7 +458,7 @@ class Visualizer(QWidget):
         height_label.setMinimumWidth(45)
         height_label.setStyleSheet("font-size: 10px; color: #000;")
         self.height_input = QLineEdit()
-        self.height_input.setText(f"{self.pattern.height:.5f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
         self.height_input.setStyleSheet("""
             QLineEdit { 
                 border: 1px solid #ccc;
@@ -599,12 +601,12 @@ class Visualizer(QWidget):
             new_width = float(self.width_input.text())
             if new_width > 0:
                 # Reset pattern with new dimensions
-                self.pattern.reset_with_dimensions(new_width, self.pattern.height)
+                self.assembly_builder.set_dimensions(width=new_width)
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
                 self._rebuild_ui_without_chart()
         except ValueError:
-            self.width_input.setText(f"{self.pattern.width:.3f}")
+            self.width_input.setText(f"{self.assembly_builder.width:.3f}")
     
     def _on_height_changed(self):
         """Handle height input change - reset pattern and mark for recalculation."""
@@ -612,12 +614,12 @@ class Visualizer(QWidget):
             new_height = float(self.height_input.text())
             if new_height > 0:
                 # Reset pattern with new dimensions
-                self.pattern.reset_with_dimensions(self.pattern.width, new_height)
+                self.assembly_builder.set_dimensions(height=new_height)
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
                 self._rebuild_ui_without_chart()
         except ValueError:
-            self.height_input.setText(f"{self.pattern.height:.3f}")
+            self.height_input.setText(f"{self.assembly_builder.height:.3f}")
     
     def _on_thick_changed(self):
         """Handle thick input change - update assembly offset, but don't recalculate yet."""
@@ -625,7 +627,16 @@ class Visualizer(QWidget):
             new_thick = float(self.thick_input.text())
             if new_thick > 0:
                 self.thick = new_thick
-                self.assembly_offset = self.thick + 0.05
+                self.assembly_params.coil_width = self.thick
+                self.assembly_params.update_offset_from_coil()
+                if 'offset' in self.slider_map:
+                    slider = self.slider_map['offset']
+                    slider.set_range(
+                        max(0.01, self.assembly_params.coil_width * 0.5),
+                        max(self.assembly_params.offset * 2.0, self.assembly_builder.width * 2.0, 1.0),
+                        slider.step
+                    )
+                    slider.set_value(self.assembly_params.offset)
                 # Don't trigger chart update - wait for calculate button
                 self._update_views_without_chart()
         except ValueError:
@@ -638,88 +649,16 @@ class Visualizer(QWidget):
     
     def _on_twist_clicked(self):
         """Toggle twist mode - flips bottom half of shape horizontally at pattern height center."""
-        self.twist_enabled = self.twist_button.isChecked()
-        print(f"Twist mode: {'ON' if self.twist_enabled else 'OFF'}")
+        self.assembly_params.twist_enabled = self.twist_button.isChecked()
         
         # Update all views
         self._update_views_without_chart()
     
-    def _apply_twist_to_shape(self, shape_curve):
-        """Apply twist transformation - cut at height/2, rotate upper half 180° around (width/2, height/2).
-        
-        Process:
-        1. Cut the shape at y = height/2
-        2. Keep only upper half (y >= height/2)
-        3. Rotate upper half 180° around point (width/2, height/2)
-        4. Combine original upper half + rotated copy to form new closed curve
-        
-        Args:
-            shape_curve: List of (x, y) points forming a closed curve
-            
-        Returns:
-            Transformed curve with upper half and its 180° rotation
-        """
-        if not self.twist_enabled or not shape_curve:
-            return shape_curve
-        
-        # Twist center: (width/2, height/2)
-        y_center = self.pattern.height / 2.0
-        x_center = self.thick / 2.0
-        EPSILON = 1e-9
-
-        def add_unique(points, point):
-            if not points:
-                points.append(point)
-                return
-            last_x, last_y = points[-1]
-            if abs(last_x - point[0]) > EPSILON or abs(last_y - point[1]) > EPSILON:
-                points.append(point)
-        
-        # Walk the original curve once and collect the ordered upper-half points (y >= y_center),
-        # inserting exact intersection points whenever a segment crosses the twist line. This
-        # preserves the traversal order from left to right along the top of the shape.
-        num_points = len(shape_curve)
-        upper_half = []
-        for idx in range(num_points):
-            x1, y1 = shape_curve[idx]
-            x2, y2 = shape_curve[(idx + 1) % num_points]
-
-            if y1 >= y_center:
-                add_unique(upper_half, (x1, y1))
-
-            delta1 = y1 - y_center
-            delta2 = y2 - y_center
-            if delta1 * delta2 < 0.0:
-                t = (y_center - y1) / (y2 - y1)
-                x_cross = x1 + t * (x2 - x1)
-                add_unique(upper_half, (round(x_cross, 15), round(y_center, 15)))
-        
-        if len(upper_half) < 2:
-            return shape_curve
-        
-        # Rotate upper half 180° around (x_center, y_center)
-        # 180° rotation formula: (x', y') = (2*cx - x, 2*cy - y)
-        rotated_half = [
-            (round(2 * x_center - x, 15), round(2 * y_center - y, 15))
-            for x, y in upper_half
-        ]
-        
-        twisted_curve = list(upper_half)
-        for point in rotated_half:
-            add_unique(twisted_curve, point)
-
-        first_x, first_y = twisted_curve[0]
-        last_x, last_y = twisted_curve[-1]
-        if abs(first_x - last_x) > EPSILON or abs(first_y - last_y) > EPSILON:
-            twisted_curve.append((first_x, first_y))
-
-        return twisted_curve
-    
     def _rebuild_ui(self):
         """Rebuild UI after dimension changes (with full chart update)."""
         # Update input boxes
-        self.width_input.setText(f"{self.pattern.width:.3f}")
-        self.height_input.setText(f"{self.pattern.height:.3f}")
+        self.width_input.setText(f"{self.assembly_builder.width:.3f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.3f}")
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -733,8 +672,8 @@ class Visualizer(QWidget):
     def _rebuild_ui_without_chart(self):
         """Rebuild UI after dimension changes (skip chart calculation)."""
         # Update input boxes
-        self.width_input.setText(f"{self.pattern.width:.3f}")
-        self.height_input.setText(f"{self.pattern.height:.3f}")
+        self.width_input.setText(f"{self.assembly_builder.width:.3f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.3f}")
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -748,10 +687,6 @@ class Visualizer(QWidget):
             # Just call the unified update method
             self._update_3d_model()
             
-            # Print info to console
-            area = self.pattern.GetShapeArea(self.assembly_offset, 0.1)
-            print(f"3D Model updated - Array count: {int(self.assembly_count)}, Thickness: 0.047mm, Offset: {self.assembly_offset:.3f}mm, Area: {area:.3f}mm²")
-            
         except Exception as e:
             print(f"Error updating 3D model: {e}")
             import traceback
@@ -760,19 +695,12 @@ class Visualizer(QWidget):
     def _on_save_step_clicked(self):
         """Save all array patterns to STEP file."""
         try:
-            # Use same offset logic as 3D model
-            offset = self.assembly_offset
-            
-            # Get closed shape from pattern using GetShape()
-            closed_curve = self.pattern.GetShape(offset=offset, space=0.05)
-            
-            if not closed_curve or len(closed_curve) < 3:
+            curves = self.assembly_builder.get_curves()
+            left_curve = curves['left']
+            right_curve = curves['right']
+            if not left_curve or not right_curve:
                 print("No valid shape to save")
                 return
-            
-            # Apply twist transformation if enabled
-            closed_curve = self._apply_twist_to_shape(closed_curve)
-            
             options = ["Straight Array", "Spiral Coil", "Both"]
             choice, ok = QInputDialog.getItem(
                 self,
@@ -789,84 +717,39 @@ class Visualizer(QWidget):
             export_straight = choice in ("Straight Array", "Both")
             export_spiral = choice in ("Spiral Coil", "Both")
 
-            thickness = self.step_exporter.thickness
-            center_x = self.pattern.width / 2.0
-            center_y = self.pattern.height / 2.0
-            mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
-
             all_shapes = []
 
             if export_straight:
-                base_left = self.step_exporter.create_shape_from_curve(closed_curve, z_offset=thickness)
-                base_right = self.step_exporter.create_shape_from_curve(mirrored_curve, z_offset=0.0)
-                count = int(self.assembly_count)
-                for i in range(count):
-                    x_offset = i * offset
-                    shape_left = self.step_exporter.translate_shape(base_left, x_offset, 0.0, 0.0)
-                    shape_right = self.step_exporter.translate_shape(base_right, x_offset, 0.0, 0.0)
-                    all_shapes.extend([shape_left, shape_right])
+                flat_results = self.assembly_builder.build_flat_solids()
+                for inst in flat_results.get('left', []):
+                    if inst.shape is not None:
+                        all_shapes.append(inst.shape)
+                    elif inst.error:
+                        print(f"Skipping flat left #{inst.index}: {inst.error}")
+                for inst in flat_results.get('right', []):
+                    if inst.shape is not None:
+                        all_shapes.append(inst.shape)
+                    elif inst.error:
+                        print(f"Skipping flat right #{inst.index}: {inst.error}")
 
             if export_spiral:
-                try:
-                    max_u_required = 0.0
-                    curve_min_x = min(p[0] for p in closed_curve)
-                    curve_max_x = max(p[0] for p in closed_curve)
-                    curve_span = max(0.0, curve_max_x - curve_min_x)
-                    mirror_min_x = min(p[0] for p in mirrored_curve)
-                    mirror_max_x = max(p[0] for p in mirrored_curve)
-                    mirror_span = max(0.0, mirror_max_x - mirror_min_x)
-                    for i in range(int(self.assembly_count)):
-                        x_offset = i * offset
-                        max_u_required = max(max_u_required,
-                                             x_offset + curve_span,
-                                             x_offset + mirror_span)
-                    max_u_required = max(max_u_required, 1e-6)
-
-                    spiral_mapper = SpiralMapper(
-                        radius_value=self.spiral_radius,
-                        thick_value=self.spiral_thickness,
-                        turns=self.spiral_turns
-                    )
-                    if max_u_required > spiral_mapper.get_total_length():
-                        print("Warning: Spiral length insufficient for export; truncating coil geometry.")
-
-                    spiral_builder = SpiralSurfaceBuilder(
-                        mapper=spiral_mapper,
-                        max_length=max_u_required,
-                        pattern_thickness=self.step_exporter.thickness
-                    )
-
-                    for i in range(int(self.assembly_count)):
-                        x_offset = i * offset
-                        try:
-                            curved_solid_left = spiral_builder.create_thick_solid(
-                                closed_curve,
-                                thickness,
-                                x_offset=x_offset,
-                                x_origin=curve_min_x,
-                                layers=[('outer', 'middle')]
-                            )
-                            curved_solid_left = self.step_exporter.translate_shape(curved_solid_left, x_offset, 0.0, 0.0)
-                            all_shapes.append(curved_solid_left)
-                        except Exception as err:
-                            print(f"Skipping spiral left segment {i}: {err}")
-
-                        try:
-                            curved_solid_right = spiral_builder.create_thick_solid(
-                                mirrored_curve,
-                                thickness,
-                                x_offset=x_offset,
-                                x_origin=curve_min_x,
-                                x_transform=lambda xv: 2 * center_x - xv,
-                                layers=[('middle', 'inner')]
-                            )
-                            curved_solid_right = self.step_exporter.translate_shape(curved_solid_right, x_offset, 0.0, -thickness)
-                            all_shapes.append(curved_solid_right)
-                        except Exception as err:
-                            print(f"Skipping spiral right segment {i}: {err}")
-
-                except Exception as spiral_err:
-                    print(f"Unable to construct spiral solids for export: {spiral_err}")
+                spiral_results = self.assembly_builder.build_spiral_solids(
+                    radius_override=self.spiral_radius,
+                    thickness_override=self.spiral_thickness,
+                    turns_override=self.spiral_turns,
+                )
+                if spiral_results.get('length_warning'):
+                    print("Warning: Spiral length insufficient for export; truncating coil geometry.")
+                for inst in spiral_results.get('left', []):
+                    if inst.shape is not None:
+                        all_shapes.append(inst.shape)
+                    elif inst.error:
+                        print(f"Skipping spiral left #{inst.index}: {inst.error}")
+                for inst in spiral_results.get('right', []):
+                    if inst.shape is not None:
+                        all_shapes.append(inst.shape)
+                    elif inst.error:
+                        print(f"Skipping spiral right #{inst.index}: {inst.error}")
 
             if not all_shapes:
                 print("No shapes selected for export.")
@@ -913,7 +796,7 @@ class Visualizer(QWidget):
         self.sliders = []
         self.slider_map = {}
 
-        sliders_data = self.pattern.GetVariables()
+        sliders_data = self.assembly_builder.get_pattern_variables()
         for data in sliders_data:
             label = data['label']
             
@@ -933,12 +816,24 @@ class Visualizer(QWidget):
             self.slider_map[label] = slider
             self.input_layout.addWidget(slider)
 
-        # Add assembly count slider
+        # Assembly spacing / count controls
+        offset_slider = Slider(
+            label='offset',
+            min_val=max(0.01, self.assembly_params.coil_width * 0.5),
+            max_val=max(self.assembly_params.offset * 2.0, self.assembly_builder.width * 2.0, 1.0),
+            initial=self.assembly_params.offset,
+            step=0.01
+        )
+        offset_slider.valueChanged.connect(self._on_assembly_slider_changed)
+        self.sliders.append(offset_slider)
+        self.slider_map['offset'] = offset_slider
+        self.input_layout.addWidget(offset_slider)
+
         count_slider = Slider(
             label='count',
             min_val=1,
             max_val=600,
-            initial=self.assembly_count,
+            initial=self.assembly_params.count,
             step=1
         )
         count_slider.valueChanged.connect(self._on_assembly_slider_changed)
@@ -950,10 +845,10 @@ class Visualizer(QWidget):
 
     def _on_slider_changed(self, label, value):
         """Handle slider value changes - update pattern and refresh views (without expensive calculations)"""
-        previous_mode = self.pattern.get_mode()
+        previous_mode = self.assembly_builder.get_pattern_mode()
 
-        self.pattern.SetVariable(label, value)
-        current_mode = self.pattern.get_mode()
+        self.assembly_builder.set_pattern_variable(label, value)
+        current_mode = self.assembly_builder.get_pattern_mode()
         
         if previous_mode != current_mode:
             self._build_slider_panel()
@@ -968,9 +863,9 @@ class Visualizer(QWidget):
     def _on_assembly_slider_changed(self, label, value):
         """Handle assembly slider changes - update assembly parameters and refresh"""
         if label == 'offset':
-            self.assembly_offset = value
+            self.assembly_params.offset = max(0.0, value)
         elif label == 'count':
-            self.assembly_count = int(value)
+            self.assembly_params.count = int(value)
         
         # Only redraw assembly, don't auto-update 3D
         self._draw_assembly()
@@ -978,7 +873,7 @@ class Visualizer(QWidget):
     def _update_slider_ranges(self):
         """Update slider min/max ranges based on current pattern dimensions"""
         # Get updated variable info from pattern
-        variables = self.pattern.GetVariables()
+        variables = self.assembly_builder.get_pattern_variables()
         var_dict = {v['label']: v for v in variables}
 
         for label, slider in self.slider_map.items():
@@ -995,14 +890,7 @@ class Visualizer(QWidget):
         Args:
             skip_label: Optional label to skip updating (e.g., the slider user is currently changing)
         """
-        values = {
-            'width': self.pattern.width,
-            'height': self.pattern.height,
-            'vbh': self.pattern.vbh,
-            'vlw': self.pattern.vlw,
-            'corner': self.pattern.vth,
-            'exponent': self.pattern.exponent,
-        }
+        values = self.assembly_builder.get_pattern_values()
 
         for label, slider in self.slider_map.items():
             if label == skip_label:
@@ -1028,146 +916,55 @@ class Visualizer(QWidget):
     def _update_3d_model(self):
         """Update the 3D model in the viewer when pattern changes."""
         try:
-            # Clear previous display
             self.viewer3d._display.EraseAll()
-            
-            # Use same offset logic as _draw_assembly
-            offset = self.assembly_offset
-            
-            # Get closed shape from pattern using GetShape() - same as assembly
-            closed_curve = self.pattern.GetShape(offset=offset, space=0.05)
-            if not closed_curve or len(closed_curve) < 3:
-                return
-            closed_curve = self._apply_twist_to_shape(closed_curve)
+            flat_results = self.assembly_builder.build_flat_solids()
+            for inst in flat_results.get('left', []):
+                if inst.shape is not None:
+                    self.viewer3d._display.DisplayShape(inst.shape, update=False, color='BLUE', transparency=0.2)
+                elif inst.error:
+                    print(f"Flat left #{inst.index} error: {inst.error}")
 
-            thickness = self.step_exporter.thickness
-            center_x = self.pattern.width / 2.0
-            center_y = self.pattern.height / 2.0
+            for inst in flat_results.get('right', []):
+                if inst.shape is not None:
+                    self.viewer3d._display.DisplayShape(inst.shape, update=False, color='CYAN', transparency=0.3)
+                elif inst.error:
+                    print(f"Flat right #{inst.index} error: {inst.error}")
 
-            mirrored_curve = [(2 * center_x - p[0], p[1]) for p in closed_curve]
-
-            base_left = self.step_exporter.create_shape_from_curve(closed_curve, z_offset=thickness)
-            base_right = self.step_exporter.create_shape_from_curve(mirrored_curve, z_offset=0.0)
-
-            # Centered copies for spiral placement (origin at pattern centre, thickness centred about zero)
-            base_left_spiral = self.step_exporter.translate_shape(
-                base_left,
-                -center_x,
-                -center_y,
-                -1.5 * thickness
+            spiral_results = self.assembly_builder.build_spiral_solids(
+                radius_override=self.spiral_radius,
+                thickness_override=self.spiral_thickness,
+                turns_override=self.spiral_turns,
             )
-            base_right_spiral = self.step_exporter.translate_shape(
-                base_right,
-                -center_x,
-                -center_y,
-                -0.5 * thickness
-            )
+            if spiral_results.get('length_warning'):
+                print("Warning: Spiral length insufficient for requested array; truncating coil display.")
 
-            count = int(self.assembly_count)
-            for i in range(count):
-                x_offset = i * offset
-                left_shape = self.step_exporter.translate_shape(base_left, x_offset, 0.0, 0.0)
-                self.viewer3d._display.DisplayShape(left_shape, update=False, color='BLUE', transparency=0.2)
+            for inst in spiral_results.get('left', []):
+                if inst.shape is not None:
+                    self.viewer3d._display.DisplayShape(
+                        inst.shape,
+                        update=False,
+                        color='GREEN',
+                        transparency=0.35
+                    )
+                elif inst.error:
+                    print(f"Spiral left #{inst.index} error: {inst.error}")
 
-                right_shape = self.step_exporter.translate_shape(base_right, x_offset, 0.0, 0.0)
-                self.viewer3d._display.DisplayShape(right_shape, update=False, color='CYAN', transparency=0.3)
+            for inst in spiral_results.get('right', []):
+                if inst.shape is not None:
+                    self.viewer3d._display.DisplayShape(
+                        inst.shape,
+                        update=False,
+                        color='MAGENTA',
+                        transparency=0.45
+                    )
+                elif inst.error:
+                    print(f"Spiral right #{inst.index} error: {inst.error}")
 
-            # Build curved coil representation using spiral surface mapping
-            try:
-                curve_min_x = min(p[0] for p in closed_curve)
-                curve_max_x = max(p[0] for p in closed_curve)
-                curve_span = max(0.0, curve_max_x - curve_min_x)
-                mirror_min_x = min(p[0] for p in mirrored_curve)
-                mirror_max_x = max(p[0] for p in mirrored_curve)
-                mirror_span = max(0.0, mirror_max_x - mirror_min_x)
-
-                max_u_required = 0.0
-                for i in range(count):
-                    x_offset = i * offset
-                    max_u_required = max(max_u_required,
-                                         x_offset + curve_span,
-                                         x_offset + mirror_span)
-                max_u_required = max(max_u_required, 1e-6)
-
-                spiral_mapper = SpiralMapper(
-                    radius_value=self.spiral_radius,
-                    thick_value=self.spiral_thickness,
-                    turns=self.spiral_turns
-                )
-                if max_u_required > spiral_mapper.get_total_length():
-                    print("Warning: Spiral length insufficient for requested array; truncating coil display.")
-
-                spiral_builder = SpiralSurfaceBuilder(
-                    mapper=spiral_mapper,
-                    max_length=max_u_required,
-                    pattern_thickness=self.step_exporter.thickness
-                )
-
-                for i in range(count):
-                    x_offset = i * offset
-
-                    try:
-                        curved_solid_left = spiral_builder.create_thick_solid(
-                            closed_curve,
-                            self.step_exporter.thickness,
-                            x_offset=x_offset,
-                            x_origin=curve_min_x,
-                            layers=[('outer', 'middle')]
-                        )
-                        curved_solid_left = self.step_exporter.translate_shape(curved_solid_left, x_offset, 0.0, 0.0)
-                        self.viewer3d._display.DisplayShape(
-                            curved_solid_left,
-                            update=False,
-                            color='GREEN',
-                            transparency=0.35
-                        )
-                    except Exception as err:
-                        print(f"Failed to build spiral left segment {i}: {err}")
-
-                    try:
-                        curved_solid_right = spiral_builder.create_thick_solid(
-                            mirrored_curve,
-                            self.step_exporter.thickness,
-                            x_offset=x_offset,
-                            x_origin=curve_min_x,
-                            x_transform=lambda xv: 2 * center_x - xv,
-                            layers=[('middle', 'inner')]
-                        )
-                        curved_solid_right = self.step_exporter.translate_shape(curved_solid_right, x_offset, 0.0, -self.step_exporter.thickness)
-                        self.viewer3d._display.DisplayShape(
-                            curved_solid_right,
-                            update=False,
-                            color='MAGENTA',
-                            transparency=0.45
-                        )
-                    except Exception as err:
-                        print(f"Failed to build spiral right segment {i}: {err}")
-
-            except Exception as coil_error:
-                print(f"Unable to generate spiral coil representation: {coil_error}")
-
-            # Fit all shapes in view
             self.viewer3d._display.FitAll()
             self.viewer3d._display.Repaint()
             
         except Exception as e:
             print(f"Error updating 3D model: {e}")
-    
-    def _draw_segments(self, ax, segments, color, linewidth=1, alpha=1.0, x_offset=0):
-        """Helper function to draw line segments
-        
-        Args:
-            ax: Matplotlib axis object
-            segments: List of segments, each segment is [[x1,y1], [x2,y2]]
-            color: Line color
-            linewidth: Line width
-            alpha: Transparency (0-1)
-            x_offset: Horizontal offset to apply
-        """
-        for seg in segments:
-            xs = [seg[0][0] + x_offset, seg[1][0] + x_offset]
-            ys = [seg[0][1], seg[1][1]]
-            ax.plot(xs, ys, color=color, linewidth=linewidth, alpha=alpha)
     
     def _draw_curve(self, ax, curve, color, linewidth=1, alpha=1.0, x_offset=0):
         """Helper function to draw a curve (list of points)
@@ -1190,10 +987,11 @@ class Visualizer(QWidget):
         self.pattern_ax.clear()
         
         # Get segments from pattern with shape
-        segments = self.pattern.GetSegments(
-            assembly_offset=self.assembly_offset,
-            space=0.05  # Default spacing
+        segments = self.assembly_builder.get_segments(
+            assembly_offset=self.assembly_params.offset,
+            space=self.assembly_params.spacing
         )
+        curves = self.assembly_builder.get_curves()
         
         # Draw bounding box (optional, can be commented out)
         bbox = segments['bbox_left']
@@ -1202,10 +1000,8 @@ class Visualizer(QWidget):
         self.pattern_ax.plot(xs, ys, 'k-', linewidth=0.5, alpha=0.2)
         
         # Draw the closed shape if available
-        if 'shape' in segments and segments['shape']:
-            shape = segments['shape']
-            # Apply twist transformation if enabled
-            shape = self._apply_twist_to_shape(shape)
+        if curves['left']:
+            shape = curves['left']
             xs = [p[0] for p in shape]
             ys = [p[1] for p in shape]
             # Fill the shape with light color
@@ -1218,7 +1014,7 @@ class Visualizer(QWidget):
         
         # Draw right curve (mirrored, 30% transparent)
         # Mirror the left curve across the symmetry axis
-        center_x = self.pattern.width / 2.0
+        center_x = self.assembly_builder.width / 2.0
         curve_right = [(2 * center_x - p[0], p[1]) for p in segments['curve_left']]
         self._draw_curve(self.pattern_ax, curve_right, 'b', linewidth=1.0, alpha=0.3)
         
@@ -1232,9 +1028,9 @@ class Visualizer(QWidget):
         self.pattern_ax.set_aspect('equal')
         
         # Calculate the center and max dimension for centering and filling
-        center_x = self.pattern.width / 2
-        center_y = self.pattern.height / 2
-        max_dim = max(self.pattern.width, self.pattern.height)
+        center_x = self.assembly_builder.width / 2
+        center_y = self.assembly_builder.height / 2
+        max_dim = max(self.assembly_builder.width, self.assembly_builder.height)
         
         # Add 10% margin and center the view
         margin_factor = 1.1
@@ -1256,40 +1052,26 @@ class Visualizer(QWidget):
         """Draw the assembly with repeated shape patterns"""
         self.assembly_ax.clear()
         
-        # Use assembly offset from slider
-        offset = self.assembly_offset
-        
-        # Get the shape for the pattern
-        shape = self.pattern.GetShape(offset=offset, space=0.05)
-        
-        if not shape:
+        instances = self.assembly_builder.build_2d_instances()
+        if not instances:
+            self.assembly_canvas.draw()
             return
-        
-        # Apply twist transformation if enabled
-        shape = self._apply_twist_to_shape(shape)
-        
+
         # Set transparency for overlapping visualization
         base_alpha = 0.5
         
-        # Calculate center x for mirroring
-        center_x = self.pattern.width / 2.0
-        
         # Draw repeated patterns
-        for i in range(int(self.assembly_count)):
-            x_offset = i * offset
-            
-            # Draw left shape
-            xs = [p[0] + x_offset for p in shape]
-            ys = [p[1] for p in shape]
+        for inst in instances:
+            xs = [p[0] for p in inst.left_shape]
+            ys = [p[1] for p in inst.left_shape]
             # Fill the shape
             self.assembly_ax.fill(xs, ys, color='lightblue', alpha=base_alpha * 0.6)
             # Draw the shape outline
             self.assembly_ax.plot(xs, ys, 'b-', linewidth=0.8, alpha=base_alpha)
             
             # Draw right shape (mirrored)
-            shape_right = [(2 * center_x - p[0], p[1]) for p in shape]
-            xs_right = [p[0] + x_offset for p in shape_right]
-            ys_right = [p[1] for p in shape_right]
+            xs_right = [p[0] for p in inst.right_shape]
+            ys_right = [p[1] for p in inst.right_shape]
             # Fill the mirrored shape
             self.assembly_ax.fill(xs_right, ys_right, color='lightblue', alpha=base_alpha * 0.3)
             # Draw the mirrored shape outline with dashed line
@@ -1301,17 +1083,13 @@ class Visualizer(QWidget):
         # Calculate view bounds - use fixed width based on window aspect ratio
         # Assembly window width is height * multiple, so calculate the corresponding data width
         assembly_aspect = self.multiple  # width/height ratio of the window
-        view_height = self.pattern.height * 1.1  # Add 10% margin
+        view_height = self.assembly_builder.height * 1.1  # Add 10% margin
         view_width = view_height * assembly_aspect  # Match window aspect ratio
         
         # Center the view horizontally on the content
-        if int(self.assembly_count) > 0:
-            last_pattern_start = (int(self.assembly_count) - 1) * self.assembly_offset
-            content_width = last_pattern_start + self.pattern.width
-            center_x = content_width / 2
-        else:
-            content_width = self.pattern.width
-            center_x = self.pattern.width / 2
+        last_start = instances[-1].offset if instances else 0.0
+        content_width = last_start + self.assembly_builder.width
+        center_x = content_width / 2
         
         # Set view limits to fill the entire window width
         self.assembly_ax.set_xlim(center_x - view_width/2, center_x + view_width/2)
@@ -1339,12 +1117,12 @@ class Visualizer(QWidget):
         resistance_values = []
         
         # Save current state so we can restore after sampling
-        state_snapshot = self.pattern.snapshot()
-        is_mode_a = self.pattern.get_mode() == 'A'
+        state_snapshot = self.assembly_builder.snapshot_pattern()
+        is_mode_a = self.assembly_builder.get_pattern_mode() == 'A'
         
         if is_mode_a:
             # Mode A: vary vbh from 0 to half_height
-            half_height = self.pattern.height / 2.0
+            half_height = self.assembly_builder.height / 2.0
             vbh_start = 0.0
             vbh_end = half_height
             vbh_step = half_height / 100.0  # 100 steps
@@ -1354,20 +1132,20 @@ class Visualizer(QWidget):
             try:
                 while current_vbh <= vbh_end + 1e-9:
                     # Restore original geometry before applying a new vbh
-                    self.pattern.restore(state_snapshot)
-                    self.pattern.SetVariable('vbh', current_vbh)
+                    self.assembly_builder.restore_pattern(state_snapshot)
+                    self.assembly_builder.set_pattern_variable('vbh', current_vbh)
 
-                    area = self.pattern.GetShapeArea(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    area = self.assembly_builder.get_shape_area(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
-                    coeff = self.pattern.GetEquivalentCoefficient(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    coeff = self.assembly_builder.get_equivalent_coefficient(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
-                    resistance = self.pattern.GetResistance(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    resistance = self.assembly_builder.get_resistance(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
 
                     x_values.append(current_vbh)
@@ -1377,7 +1155,7 @@ class Visualizer(QWidget):
 
                     current_vbh += vbh_step
             finally:
-                self.pattern.restore(state_snapshot)
+                self.assembly_builder.restore_pattern(state_snapshot)
         else:
             # Mode B: vary exponent from 1.2 to 2.0
             exponent_start = 1.2
@@ -1389,20 +1167,20 @@ class Visualizer(QWidget):
             try:
                 while current_exp <= exponent_end + 1e-9:
                     # Restore original geometry before applying a new exponent
-                    self.pattern.restore(state_snapshot)
-                    self.pattern.SetVariable('exponent', current_exp)
+                    self.assembly_builder.restore_pattern(state_snapshot)
+                    self.assembly_builder.set_pattern_variable('exponent', current_exp)
 
-                    area = self.pattern.GetShapeArea(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    area = self.assembly_builder.get_shape_area(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
-                    coeff = self.pattern.GetEquivalentCoefficient(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    coeff = self.assembly_builder.get_equivalent_coefficient(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
-                    resistance = self.pattern.GetResistance(
-                        offset=self.assembly_offset,
-                        space=0.05
+                    resistance = self.assembly_builder.get_resistance(
+                        offset=self.assembly_params.offset,
+                        space=self.assembly_params.spacing
                     )
 
                     x_values.append(current_exp)
@@ -1412,15 +1190,15 @@ class Visualizer(QWidget):
 
                     current_exp += exponent_step
             finally:
-                self.pattern.restore(state_snapshot)
+                self.assembly_builder.restore_pattern(state_snapshot)
         
         # Calculate current values for display
-        current_area = self.pattern.GetShapeArea(offset=self.assembly_offset, space=0.05)
+        current_area = self.assembly_builder.get_shape_area(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         s1 = current_area
-        s2 = self.pattern.GetRectangleArea(offset=self.assembly_offset, space=0.05)
-        current_coeff = self.pattern.GetEquivalentCoefficient(offset=self.assembly_offset, space=0.05)
-        current_resistance = self.pattern.GetResistance(offset=self.assembly_offset, space=0.05)
-        symmetric_area = self.pattern.GetSymmetricCurveArea()
+        s2 = self.assembly_builder.get_rectangle_area(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
+        current_coeff = self.assembly_builder.get_equivalent_coefficient(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
+        current_resistance = self.assembly_builder.get_resistance(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
+        symmetric_area = self.assembly_builder.get_symmetric_curve_area()
         
         # Calculate area improvement rate
         if is_mode_a:
@@ -1478,7 +1256,7 @@ class Visualizer(QWidget):
         
         # Set x-axis limits to match the data range
         if is_mode_a:
-            half_height = self.pattern.height / 2.0
+            half_height = self.assembly_builder.height / 2.0
             self.chart_ax.set_xlim(-0.05 * half_height, 1.05 * half_height)
         else:
             self.chart_ax.set_xlim(1.15, 2.05)
