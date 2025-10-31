@@ -13,22 +13,25 @@ class Pattern:
     Pattern geometry based on a single quadrant definition.
 
     Parameters:
-        - vbh: vertical straight segment (lower half of left edge)
-        - vth: vertical radius of the corner (upper half of left edge)
-        - vlw: horizontal radius of the corner (left half of top edge)
-        - vrw: horizontal straight segment (right half of top edge)
+        - vbh_bottom: vertical straight segment for lower half of left edge
+        - vbh_top: vertical straight segment for upper half of left edge
+        - vth_top / vth_bottom: superellipse corner radii in Y
+        - vlw_top / vlw_bottom: superellipse corner radii in X
+        - vrw_top / vrw_bottom: horizontal straight segment lengths to symmetry axis
 
     Constraints:
-        - (vbh + vth) * 2 == height
-        - (vlw + vrw) * 2 == width
+        - (vbh_bottom + vth_bottom) == height / 2
+        - (vbh_top + vth_top) == height / 2
+        - (vlw_top + vrw_top) == width / 2
+        - (vlw_bottom + vrw_bottom) == width / 2
 
     Mode A (exponent == 2):
-        - vbh and vlw are user controlled (sliders).
-        - vth and vrw are derived to satisfy constraints.
+        - vbh (bottom straight) and vlw (top horizontal radius) are user controlled.
+        - Top and bottom halves stay symmetric.
 
     Mode B (exponent < 2):
-        - vth == vlw == corner slider value.
-        - vbh and vrw are derived to satisfy constraints.
+        - Top and bottom corners expose independent sliders.
+        - Straight segments are derived per half to satisfy constraints.
     """
 
     _EXP_TOLERANCE = 1e-6
@@ -45,11 +48,21 @@ class Pattern:
         half_height = self.height / 2.0
 
         initial_corner = min(half_width, half_height) * 0.5
-        self.vlw = initial_corner
-        self.vth = initial_corner
-        self.vrw = max(0.0, half_width - self.vlw)
-        self.vbh = max(0.0, half_height - self.vth)
-        self.corner_value = initial_corner
+        self.vlw = initial_corner  # top corner horizontal radius
+        self.vth = initial_corner  # top corner vertical radius
+        self.vrw = max(0.0, half_width - self.vlw)  # top straight segment
+        self.vbh = max(0.0, half_height - self.vth)  # bottom straight segment (Mode A control)
+
+        # Independent corner controls for Mode B
+        self.corner_top_value = initial_corner
+        self.corner_bottom_value = initial_corner
+
+        # Derived bottom half parameters
+        self.vlw_bottom = initial_corner
+        self.vth_bottom = initial_corner
+        self.vrw_bottom = max(0.0, half_width - self.vlw_bottom)
+        self.vbh_bottom = max(0.0, half_height - self.vth_bottom)
+        self.vbh_top = max(0.0, half_height - self.vth)
 
         # Superellipse helper
         self.superellipse = Superellipse.get_instance()
@@ -71,7 +84,15 @@ class Pattern:
         self.vth = initial_corner
         self.vrw = max(0.0, half_width - self.vlw)
         self.vbh = max(0.0, half_height - self.vth)
-        self.corner_value = initial_corner
+
+        self.corner_top_value = initial_corner
+        self.corner_bottom_value = initial_corner
+
+        self.vlw_bottom = initial_corner
+        self.vth_bottom = initial_corner
+        self.vrw_bottom = max(0.0, half_width - self.vlw_bottom)
+        self.vbh_bottom = max(0.0, half_height - self.vth_bottom)
+        self.vbh_top = max(0.0, half_height - self.vth)
 
         self._apply_constraints()
 
@@ -96,22 +117,35 @@ class Pattern:
             vlw_max = max(0.0, half_width - 0.05)
             self.vbh = self._clamp(self.vbh, 0.0, half_height)
             self.vlw = self._clamp(self.vlw, 0.0, vlw_max)
+            self.vlw_bottom = self._clamp(self.vlw_bottom, 0.0, vlw_max)
 
             # Derived values
             self.vth = max(0.0, half_height - self.vbh)
             self.vrw = max(0.0, half_width - self.vlw)
+            self.vrw_bottom = max(0.0, half_width - self.vlw_bottom)
+            self.vth_bottom = self.vth
 
-            # Update stored corner slider baseline for mode switches
-            self.corner_value = min(self.vth, self.vlw)
+            # Mirror values to keep halves in sync
+            self.corner_top_value = min(self.vth, self.vlw)
+            self.corner_bottom_value = min(self.vth_bottom, self.vlw_bottom)
+            self.vbh_bottom = self.vbh
+            self.vbh_top = max(0.0, half_height - self.vth)
         else:
-            # Unified corner value controls both radii
+            # Independent corner sliders drive top/bottom radii
             max_corner = min(half_width, half_height)
-            self.corner_value = self._clamp(self.corner_value, 0.0, max_corner)
+            self.corner_top_value = self._clamp(self.corner_top_value, 0.0, max_corner)
+            self.corner_bottom_value = self._clamp(self.corner_bottom_value, 0.0, max_corner)
 
-            self.vth = self.corner_value
-            self.vlw = self.corner_value
-            self.vbh = max(0.0, half_height - self.vth)
+            self.vth = self.corner_top_value
+            self.vlw = self.corner_top_value
             self.vrw = max(0.0, half_width - self.vlw)
+            self.vbh_top = max(0.0, half_height - self.vth)
+
+            self.vth_bottom = self.corner_bottom_value
+            self.vlw_bottom = self.corner_bottom_value
+            self.vrw_bottom = max(0.0, half_width - self.vlw_bottom)
+            self.vbh = max(0.0, half_height - self.vth_bottom)
+            self.vbh_bottom = self.vbh
 
     def snapshot(self) -> Dict[str, float]:
         """Capture current state for temporary simulations."""
@@ -123,7 +157,9 @@ class Pattern:
             'vth': self.vth,
             'vlw': self.vlw,
             'vrw': self.vrw,
-            'corner_value': self.corner_value,
+            'vlw_bottom': self.vlw_bottom,
+            'corner_top_value': self.corner_top_value,
+            'corner_bottom_value': self.corner_bottom_value,
         }
 
     def restore(self, state: Dict[str, float]):
@@ -135,7 +171,9 @@ class Pattern:
 
         self.vbh = max(0.0, state['vbh'])
         self.vlw = max(0.0, state['vlw'])
-        self.corner_value = max(0.0, state['corner_value'])
+        self.vlw_bottom = max(0.0, state.get('vlw_bottom', self.vlw_bottom))
+        self.corner_top_value = max(0.0, state.get('corner_top_value', self.corner_top_value))
+        self.corner_bottom_value = max(0.0, state.get('corner_bottom_value', self.corner_bottom_value))
         # Derived fields will be reconstructed below
         self._apply_constraints()
 
@@ -179,21 +217,38 @@ class Pattern:
                     'step': 0.01,
                 },
                 {
-                    'label': 'vlw',
+                    'label': 'vlw_top',
                     'value': self.vlw,
+                    'min': 0.0,
+                    'max': vlw_max,
+                    'step': 0.01,
+                },
+                {
+                    'label': 'vlw_bottom',
+                    'value': self.vlw_bottom,
                     'min': 0.0,
                     'max': vlw_max,
                     'step': 0.01,
                 },
             ])
         else:
-            variables.append({
-                'label': 'corner',
-                'value': self.vth,
-                'min': 0.0,
-                'max': min(half_width, half_height),
-                'step': 0.01,
-            })
+            max_corner = min(half_width, half_height)
+            variables.extend([
+                {
+                    'label': 'corner_bottom',
+                    'value': self.corner_bottom_value,
+                    'min': 0.0,
+                    'max': max_corner,
+                    'step': 0.01,
+                },
+                {
+                    'label': 'corner_top',
+                    'value': self.corner_top_value,
+                    'min': 0.0,
+                    'max': max_corner,
+                    'step': 0.01,
+                },
+            ])
 
         variables.append({
             'label': 'exponent',
@@ -214,8 +269,19 @@ class Pattern:
             self.vbh = max(0.0, value)
         elif label == 'vlw':
             self.vlw = max(0.0, value)
+        elif label == 'vlw_top':
+            self.vlw = max(0.0, value)
+        elif label == 'vlw_bottom':
+            self.vlw_bottom = max(0.0, value)
+        elif label == 'corner_bottom':
+            self.corner_bottom_value = max(0.0, value)
+        elif label == 'corner_top':
+            self.corner_top_value = max(0.0, value)
         elif label == 'corner':
-            self.corner_value = max(0.0, value)
+            # Backward compatibility: update both sliders
+            sanitized = max(0.0, value)
+            self.corner_top_value = sanitized
+            self.corner_bottom_value = sanitized
         elif label == 'exponent':
             prev_mode_a = self._is_mode_a()
             value = self._clamp(value, 0.5, 2.0)
@@ -224,7 +290,9 @@ class Pattern:
 
             if prev_mode_a and not self._is_mode_a():
                 # Preserve smooth transition into mode B
-                self.corner_value = min(self.vth, self.vlw)
+                carry = min(self.vth, self.vlw)
+                self.corner_top_value = carry
+                self.corner_bottom_value = carry
             elif not prev_mode_a and self._is_mode_a():
                 # Carry over previous straight portion as baseline
                 half_height = max(0.0, self.height / 2.0)
@@ -247,18 +315,25 @@ class Pattern:
     def _fmt_point(x: float, y: float) -> Tuple[float, float]:
         return (round(x, 15), round(y, 15))
 
-    def _key_points(self) -> Dict[str, Tuple[float, float]]:
-        half_width = self.width / 2.0
+    def _x_limit_for_y(self, y: float) -> float:
         half_height = self.height / 2.0
+        if y <= half_height + POINT_EPSILON:
+            return max(0.0, self.vlw_bottom)
+        return max(0.0, self.vlw)
+
+    def _key_points(self) -> Dict[str, Tuple[float, float]]:
+        half_height = self.height / 2.0
+        bottom_limit = self._x_limit_for_y(0.0)
+        top_limit = self._x_limit_for_y(self.height)
 
         return {
-            'bottom_center': self._fmt_point(half_width, 0.0),
-            'bottom_corner_start': self._fmt_point(self.vlw, 0.0),
-            'bottom_vertical_end': self._fmt_point(0.0, self.vth),
+            'bottom_center': self._fmt_point(bottom_limit, 0.0),
+            'bottom_corner_start': self._fmt_point(self.vlw_bottom, 0.0),
+            'bottom_vertical_end': self._fmt_point(0.0, self.vth_bottom),
             'center_left': self._fmt_point(0.0, half_height),
             'top_vertical_start': self._fmt_point(0.0, self.height - self.vth),
             'top_corner_start': self._fmt_point(self.vlw, self.height),
-            'top_center': self._fmt_point(half_width, self.height),
+            'top_center': self._fmt_point(top_limit, self.height),
         }
 
     # --------------------------------------------------------------------- #
@@ -294,14 +369,13 @@ class Pattern:
         add_point(points['bottom_center'])
 
         # Bottom horizontal straight segment towards the corner
-        if self.vrw > POINT_EPSILON:
+        if self.vrw_bottom > POINT_EPSILON:
             add_point(points['bottom_corner_start'])
 
         # Bottom-left corner
-        # Both top and bottom corners should use vth as the corner radius
         corner_lb = self.superellipse.generate_corner_points(
-            self.vlw,
-            self.vth,
+            self.vlw_bottom,
+            self.vth_bottom,
             3,
             0.0,
             0.0,
@@ -312,7 +386,7 @@ class Pattern:
             add_point(pt)
 
         # Vertical straight to the centre
-        lower_target = self._fmt_point(0.0, self.vth + self.vbh)
+        lower_target = self._fmt_point(0.0, self.vth_bottom + self.vbh_bottom)
         add_point(lower_target)
 
         # Continue vertical straight to the start of the top corner
@@ -369,10 +443,8 @@ class Pattern:
         if not curve_left:
             return []
 
-        center_x = self.width / 2.0
         max_y = self.height
         min_y = 0.0
-
         # Offset curve
         curve_b = [(x + offset, y) for x, y in curve_left]
 
@@ -402,7 +474,7 @@ class Pattern:
             pcl_y = curve_b[i][1] + ny * space
             pcl_raw.append((pcl_x, pcl_y))
 
-        # Clip the inset curve to valid region (x <= center_x, 0 <= y <= max_y)
+        # Clip the inset curve to valid region (piecewise limits in X, 0 <= y <= max_y)
         pcl_clipped: List[Tuple[float, float]] = []
         
         for i in range(len(pcl_raw)):
@@ -410,7 +482,7 @@ class Pattern:
             x2, y2 = pcl_raw[(i + 1) % len(pcl_raw)]
             
             # Check if segment needs clipping
-            seg_points = self._clip_segment(x1, y1, x2, y2, center_x, min_y, max_y)
+            seg_points = self._clip_segment_piecewise(x1, y1, x2, y2, min_y, max_y)
             
             # Add clipped segment points (avoid duplicates)
             for pt in seg_points:
@@ -419,8 +491,10 @@ class Pattern:
         
         if not pcl_clipped:
             # If all points clipped out, fallback to simple shape
-            pcl_clipped = [self._fmt_point(center_x, min_y), 
-                          self._fmt_point(center_x, max_y)]
+            pcl_clipped = [
+                self._fmt_point(self.vlw_bottom, min_y),
+                self._fmt_point(self.vlw, max_y),
+            ]
 
         # Build closed shape: left curve + reversed clipped right boundary
         closed_shape = list(curve_left)
@@ -432,8 +506,8 @@ class Pattern:
 
         return closed_shape
     
-    def _clip_segment(self, x1: float, y1: float, x2: float, y2: float,
-                      max_x: float, min_y: float, max_y: float) -> List[Tuple[float, float]]:
+    def _clip_segment_const(self, x1: float, y1: float, x2: float, y2: float,
+                            max_x: float, min_y: float, max_y: float) -> List[Tuple[float, float]]:
         """
         Clip a line segment to the bounding box [0, max_x] × [min_y, max_y].
         Returns list of points representing the clipped segment.
@@ -485,6 +559,35 @@ class Pattern:
             result.append((x2, y2))
         
         return result
+    
+    def _clip_segment_piecewise(self, x1: float, y1: float, x2: float, y2: float,
+                                min_y: float, max_y: float) -> List[Tuple[float, float]]:
+        """
+        Clip a segment against the dynamic x-limits defined by top/bottom radii.
+        """
+        half_height = self.height / 2.0
+        points: List[Tuple[float, float]] = [(x1, y1)]
+
+        # Split at the horizontal midline where the x-limit changes
+        if (y1 - half_height) * (y2 - half_height) < -POINT_EPSILON:
+            if abs(y2 - y1) > POINT_EPSILON:
+                t = (half_height - y1) / (y2 - y1)
+                xi = x1 + t * (x2 - x1)
+                points.append((xi, half_height))
+
+        points.append((x2, y2))
+
+        result: List[Tuple[float, float]] = []
+        for start, end in zip(points, points[1:]):
+            mid_y = (start[1] + end[1]) / 2.0
+            max_x = self._x_limit_for_y(mid_y)
+
+            seg = self._clip_segment_const(start[0], start[1], end[0], end[1], max_x, min_y, max_y)
+            for pt in seg:
+                if not result or not self._points_close(result[-1], pt):
+                    result.append(pt)
+
+        return result
 
     def GetShapeArea(self, offset: float, space: float) -> float:
         shape = self.GetShape(offset, space)
@@ -500,7 +603,8 @@ class Pattern:
         return abs(area) / 2.0
 
     def GetRectangleArea(self, offset: float, space: float) -> float:
-        return (2.0 * self.vbh) * max(offset - space, 0.0)
+        vertical_span = max(self.vbh_top + self.vbh_bottom, 0.0)
+        return vertical_span * max(offset - space, 0.0)
 
     def GetEquivalentCoefficient(self, offset: float, space: float) -> float:
         s1 = self.GetShapeArea(offset, space)
