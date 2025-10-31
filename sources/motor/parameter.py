@@ -18,11 +18,19 @@ class PatternParameters:
         self.height = 0.0
         self.exponent = 2.0  # placeholder until reset
 
-        self.vbh = 0.0  # vertical bottom straight segment
+        self.vbh = 0.0  # vertical bottom straight segment (mode A control)
         self.vth = 0.0  # vertical top radius portion
         self.vlw = 0.0  # horizontal left radius portion
         self.vrw = 0.0  # horizontal right straight segment
-        self.corner_value = 0.0  # slider value for Mode B
+
+        self.corner_t_value = 0.0
+        self.corner_b_value = 0.0
+
+        self.vlw_b = 0.0
+        self.vth_bottom = 0.0
+        self.vrw_bottom = 0.0
+        self.vbh_bottom = 0.0
+        self.vbh_top = 0.0
 
         self.reset(width=width, height=height, exponent=exponent)
 
@@ -60,7 +68,15 @@ class PatternParameters:
         self.vth = initial_corner
         self.vrw = max(0.0, half_width - self.vlw)
         self.vbh = max(0.0, half_height - self.vth)
-        self.corner_value = initial_corner
+
+        self.corner_t_value = initial_corner
+        self.corner_b_value = initial_corner
+
+        self.vlw_b = initial_corner
+        self.vth_bottom = initial_corner
+        self.vrw_bottom = max(0.0, half_width - self.vlw_b)
+        self.vbh_bottom = max(0.0, half_height - self.vth_bottom)
+        self.vbh_top = max(0.0, half_height - self.vth)
 
         self._apply_constraints()
 
@@ -68,7 +84,7 @@ class PatternParameters:
         """
         Apply mode-dependent constraints to keep the parameters self-consistent.
         Mode A (exponent == 2): user controls vbh/vlw, other values derived.
-        Mode B (exponent < 2): a unified corner slider controls vth/vlw.
+        Mode B (exponent < 2): independent corner sliders for top/bottom halves.
         """
         half_width = max(0.0, self.width / 2.0)
         half_height = max(0.0, self.height / 2.0)
@@ -78,19 +94,33 @@ class PatternParameters:
             vlw_max = max(0.0, half_width - 0.05)
             self.vbh = self._clamp(self.vbh, 0.0, half_height)
             self.vlw = self._clamp(self.vlw, 0.0, vlw_max)
+            self.vlw_b = self._clamp(self.vlw_b, 0.0, vlw_max)
 
             self.vth = max(0.0, half_height - self.vbh)
             self.vrw = max(0.0, half_width - self.vlw)
 
-            self.corner_value = min(self.vth, self.vlw)
+            self.vrw_bottom = max(0.0, half_width - self.vlw_b)
+            self.vth_bottom = self.vth
+
+            self.corner_t_value = min(self.vth, self.vlw)
+            self.corner_b_value = min(self.vth_bottom, self.vlw_b)
+            self.vbh_bottom = self.vbh
+            self.vbh_top = max(0.0, half_height - self.vth)
         else:
             max_corner = min(half_width, half_height)
-            self.corner_value = self._clamp(self.corner_value, 0.0, max_corner)
+            self.corner_t_value = self._clamp(self.corner_t_value, 0.0, max_corner)
+            self.corner_b_value = self._clamp(self.corner_b_value, 0.0, max_corner)
 
-            self.vth = self.corner_value
-            self.vlw = self.corner_value
-            self.vbh = max(0.0, half_height - self.vth)
+            self.vth = self.corner_t_value
+            self.vlw = self.corner_t_value
             self.vrw = max(0.0, half_width - self.vlw)
+            self.vbh_top = max(0.0, half_height - self.vth)
+
+            self.vth_bottom = self.corner_b_value
+            self.vlw_b = self.corner_b_value
+            self.vrw_bottom = max(0.0, half_width - self.vlw_b)
+            self.vbh = max(0.0, half_height - self.vth_bottom)
+            self.vbh_bottom = self.vbh
 
     # ------------------------------------------------------------------ #
     # Inspection helpers
@@ -108,7 +138,9 @@ class PatternParameters:
             'vth': self.vth,
             'vlw': self.vlw,
             'vrw': self.vrw,
-            'corner_value': self.corner_value,
+            'vlw_b': self.vlw_b,
+            'corner_t_value': self.corner_t_value,
+            'corner_b_value': self.corner_b_value,
         }
 
     def restore(self, state: Dict[str, float]):
@@ -120,7 +152,9 @@ class PatternParameters:
         self.exponent = self._clamp(float(state.get('exponent', self.exponent)), 0.5, 2.0)
         self.vbh = max(0.0, float(state.get('vbh', self.vbh)))
         self.vlw = max(0.0, float(state.get('vlw', self.vlw)))
-        self.corner_value = max(0.0, float(state.get('corner_value', self.corner_value)))
+        self.vlw_b = max(0.0, float(state.get('vlw_b', self.vlw_b)))
+        self.corner_t_value = max(0.0, float(state.get('corner_t_value', self.corner_t_value)))
+        self.corner_b_value = max(0.0, float(state.get('corner_b_value', self.corner_b_value)))
         self._apply_constraints()
 
     def get_variables(self) -> List[Dict[str, float]]:
@@ -158,21 +192,38 @@ class PatternParameters:
                     'step': 0.01,
                 },
                 {
-                    'label': 'vlw',
+                    'label': 'vlw_t',
                     'value': self.vlw,
+                    'min': 0.0,
+                    'max': vlw_max,
+                    'step': 0.01,
+                },
+                {
+                    'label': 'vlw_b',
+                    'value': self.vlw_b,
                     'min': 0.0,
                     'max': vlw_max,
                     'step': 0.01,
                 },
             ])
         else:
-            variables.append({
-                'label': 'corner',
-                'value': self.vth,
-                'min': 0.0,
-                'max': min(half_width, half_height),
-                'step': 0.01,
-            })
+            max_corner = min(half_width, half_height)
+            variables.extend([
+                {
+                    'label': 'corner_b',
+                    'value': self.corner_b_value,
+                    'min': 0.0,
+                    'max': max_corner,
+                    'step': 0.01,
+                },
+                {
+                    'label': 'corner_t',
+                    'value': self.corner_t_value,
+                    'min': 0.0,
+                    'max': max_corner,
+                    'step': 0.01,
+                },
+            ])
 
         variables.append({
             'label': 'exponent',
@@ -193,15 +244,27 @@ class PatternParameters:
             self.vbh = max(0.0, float(value))
         elif label == 'vlw':
             self.vlw = max(0.0, float(value))
+        elif label == 'vlw_t':
+            self.vlw = max(0.0, float(value))
+        elif label == 'vlw_b':
+            self.vlw_b = max(0.0, float(value))
+        elif label == 'corner_b':
+            self.corner_b_value = max(0.0, float(value))
+        elif label == 'corner_t':
+            self.corner_t_value = max(0.0, float(value))
         elif label == 'corner':
-            self.corner_value = max(0.0, float(value))
+            sanitized = max(0.0, float(value))
+            self.corner_t_value = sanitized
+            self.corner_b_value = sanitized
         elif label == 'exponent':
             prev_mode_a = self._is_mode_a()
             value_clamped = self._clamp(float(value), 0.5, 2.0)
             self.exponent = value_clamped
 
             if prev_mode_a and not self._is_mode_a():
-                self.corner_value = min(self.vth, self.vlw)
+                carry = min(self.vth, self.vlw)
+                self.corner_t_value = carry
+                self.corner_b_value = carry
             elif not prev_mode_a and self._is_mode_a():
                 half_height = max(0.0, self.height / 2.0)
                 half_width = max(0.0, self.width / 2.0)

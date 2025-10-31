@@ -6,7 +6,7 @@ paths with caching for performance optimization.
 """
 
 import math
-from typing import List, Tuple, Dict
+from typing import Dict, List, Optional, Tuple
 
 RADIUS_EPSILON = 1e-12
 
@@ -30,6 +30,8 @@ class Superellipse:
         self.steps = 100
         # Shape exponent parameter (n) of the superellipse
         self.exponent = 0.80
+        # Secondary exponent parameter (m) for asymmetric curvature control
+        self.exponent_m = 0.80
         # LRU cache for superellipse points
         self.cache = {}
         # Max cache size to prevent memory leaks
@@ -37,7 +39,11 @@ class Superellipse:
         # Decimal precision for coordinates
         self.precision = 15
         # Pre-calculated quarter superellipse corner points
-        self.corner = self._sample_quarter_superellipse(n=self.exponent, steps=self.steps)
+        self.corner = self._sample_quarter_superellipse(
+            n=self.exponent,
+            m=self.exponent_m,
+            steps=self.steps,
+        )
     
     @classmethod
     def get_instance(cls):
@@ -57,21 +63,28 @@ class Superellipse:
             return 0.0
         return round(v, self.precision)
     
-    def _sample_quarter_superellipse(self, n: float, steps: int) -> List[Tuple[float, float]]:
+    def _sample_quarter_superellipse(
+        self,
+        n: float,
+        m: float,
+        steps: int,
+    ) -> List[Tuple[float, float]]:
         """
         Generate a quarter superellipse curve as an array of (x, y) points.
         Uses LRU cache for efficiency.
         
         Args:
             n: Shape exponent parameter
+            m: Secondary shape exponent parameter
             steps: Number of sample points
             
         Returns:
             List of (x, y) coordinate tuples
         """
         normalized_n = round(n * 1000) / 1000
+        normalized_m = round(m * 1000) / 1000
         normalized_steps = max(2, int(steps))
-        cache_key = f"n{normalized_n}_s{normalized_steps}"
+        cache_key = f"n{normalized_n}_m{normalized_m}_s{normalized_steps}"
         
         # Check cache
         if cache_key in self.cache:
@@ -82,22 +95,20 @@ class Superellipse:
         
         # Calculate points
         safe_n = max(0.1, min(10, normalized_n))
-        inv_n = 2 / safe_n
-        neg_n_half = -safe_n / 2
+        safe_m = max(0.1, min(10, normalized_m))
+        pow_x = 2.0 / safe_m
+        pow_y = 2.0 / safe_n
         points = []
         
         for i in range(normalized_steps + 1):
             theta = (math.pi / 2) * (i / normalized_steps)
-            cos_val = math.cos(theta)
-            sin_val = math.sin(theta)
-            rr = math.pow(
-                math.pow(abs(cos_val), inv_n) + math.pow(abs(sin_val), inv_n),
-                neg_n_half
-            )
+            cos_val = abs(math.cos(theta))
+            sin_val = abs(math.sin(theta))
+            scale = self._solve_corner_scale(cos_val, sin_val, pow_x, pow_y)
             # Invert the curve to make it convex (bulge outward) instead of concave
             # We flip the coordinates: (x, y) -> (1-y, 1-x) to get the outer curve
-            x = rr * cos_val
-            y = rr * sin_val
+            x = scale * cos_val
+            y = scale * sin_val
             points.append((1.0 - y, 1.0 - x))
         
         # Manage cache size
@@ -109,15 +120,64 @@ class Superellipse:
         self.cache[cache_key] = points
         return points
     
-    def set_exponent(self, n: float):
+    def _solve_corner_scale(
+        self,
+        cos_val: float,
+        sin_val: float,
+        pow_x: float,
+        pow_y: float,
+    ) -> float:
+        """
+        Solve for the radial scale factor that maps (cos_val, sin_val) onto the target
+        superellipse defined by |x|^{pow_x} + |y|^{pow_y} = 1.
+        """
+        if cos_val <= RADIUS_EPSILON:
+            return 1.0 / max(sin_val, RADIUS_EPSILON)
+        if sin_val <= RADIUS_EPSILON:
+            return 1.0 / max(cos_val, RADIUS_EPSILON)
+
+        lower = 0.0
+        upper = 1.0
+
+        for _ in range(40):
+            lhs = (upper ** pow_x) * (cos_val ** pow_x) + (upper ** pow_y) * (sin_val ** pow_y)
+            if lhs >= 1.0:
+                break
+            upper *= 2.0
+        # Fallback in the unlikely event upper failed to cross the surface
+        if upper <= 0.0:
+            upper = 1.0
+
+        for _ in range(60):
+            mid = (lower + upper) / 2.0
+            lhs = (mid ** pow_x) * (cos_val ** pow_x) + (mid ** pow_y) * (sin_val ** pow_y)
+            if lhs > 1.0:
+                upper = mid
+            else:
+                lower = mid
+
+        return (lower + upper) / 2.0
+    
+    def set_exponent(self, n: float, m: Optional[float] = None):
         """
         Update the exponent and recalculate corner template
         
         Args:
-            n: New exponent value (typically 0.5 - 2.0)
+            n: New primary exponent value (typically 0.5 - 2.0)
+            m: Optional secondary exponent value. Defaults to n when omitted.
         """
         self.exponent = max(0.1, min(10, n))
-        self.corner = self._sample_quarter_superellipse(n=self.exponent, steps=self.steps)
+        target_m = m if m is not None else self.exponent
+        self.exponent_m = max(0.1, min(10, target_m))
+        self.corner = self._sample_quarter_superellipse(
+            n=self.exponent,
+            m=self.exponent_m,
+            steps=self.steps,
+        )
+
+    def set_exponents(self, n: float, m: float):
+        """Update both exponents and recalculate corner template."""
+        self.set_exponent(n, m)
     
     def generate_corner_points(
         self,

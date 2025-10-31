@@ -74,8 +74,10 @@ class AssemblyBuilder:
             'width': self.pattern.width,
             'height': self.pattern.height,
             'vbh': self.pattern.vbh,
-            'vlw': self.pattern.vlw,
-            'corner': self.pattern.vth,
+            'vlw_top': self.pattern.vlw,
+            'vlw_bottom': self.pattern.vlw_bottom,
+            'corner_bottom': self.pattern.corner_bottom_value,
+            'corner_top': self.pattern.corner_top_value,
             'exponent': self.pattern.exponent,
         }
 

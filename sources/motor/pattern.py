@@ -42,6 +42,7 @@ class Pattern:
 
         # Superellipse exponent (default < 2, so start in Mode B)
         self.exponent = 0.80
+        self.exponent_m = 0.80
 
         # Core parameters (initialised before applying constraints)
         half_width = self.width / 2.0
@@ -66,7 +67,7 @@ class Pattern:
 
         # Superellipse helper
         self.superellipse = Superellipse.get_instance()
-        self.superellipse.set_exponent(self.exponent)
+        self.superellipse.set_exponents(self.exponent, self.exponent_m)
 
         self._apply_constraints()
 
@@ -153,6 +154,7 @@ class Pattern:
             'width': self.width,
             'height': self.height,
             'exponent': self.exponent,
+            'exponent_m': self.exponent_m,
             'vbh': self.vbh,
             'vth': self.vth,
             'vlw': self.vlw,
@@ -167,7 +169,8 @@ class Pattern:
         self.width = max(0.0, state['width'])
         self.height = max(0.0, state['height'])
         self.exponent = self._clamp(state['exponent'], 0.5, 2.0)
-        self.superellipse.set_exponent(self.exponent)
+        self.exponent_m = self._clamp(state.get('exponent_m', self.exponent_m), 0.5, 2.0)
+        self.superellipse.set_exponents(self.exponent, self.exponent_m)
 
         self.vbh = max(0.0, state['vbh'])
         self.vlw = max(0.0, state['vlw'])
@@ -257,6 +260,13 @@ class Pattern:
             'max': 2.0,
             'step': 0.01,
         })
+        variables.append({
+            'label': 'exponent_m',
+            'value': self.exponent_m,
+            'min': 0.5,
+            'max': 2.0,
+            'step': 0.01,
+        })
 
         return variables
 
@@ -286,7 +296,7 @@ class Pattern:
             prev_mode_a = self._is_mode_a()
             value = self._clamp(value, 0.5, 2.0)
             self.exponent = value
-            self.superellipse.set_exponent(self.exponent)
+            self.superellipse.set_exponents(self.exponent, self.exponent_m)
 
             if prev_mode_a and not self._is_mode_a():
                 # Preserve smooth transition into mode B
@@ -299,6 +309,10 @@ class Pattern:
                 half_width = max(0.0, self.width / 2.0)
                 self.vbh = self._clamp(self.vbh, 0.0, half_height)
                 self.vlw = self._clamp(self.vlw, 0.0, half_width)
+        elif label in ('exponent_m', 'm'):
+            value = self._clamp(value, 0.5, 2.0)
+            self.exponent_m = value
+            self.superellipse.set_exponents(self.exponent, self.exponent_m)
         else:
             raise ValueError(f"Unknown parameter label: {label}")
 
