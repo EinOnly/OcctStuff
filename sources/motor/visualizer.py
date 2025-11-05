@@ -1,7 +1,7 @@
 import math
 import os
 from pattern import Pattern
-from assamly import AssemblyBuilder
+from assamble import AssemblyBuilder
 from step import StepExporter
 from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
@@ -33,16 +33,16 @@ class Slider(QWidget):
         
         # Create UI components
         self.label = QLabel(f"{label}:")
-        self.label.setMinimumWidth(60)
+        self.label.setMinimumWidth(40)
         self.label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.label.setStyleSheet("QLabel { color: #000; font-size: 12px; border: none; }")
+        self.label.setStyleSheet("QLabel { color: #000; font-size: 12px; border: none; font-family: 'Courier New', monospace; }")
         
         # QSlider (integer-based)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimum(0)
         self.slider.setMaximum(self.resolution)
         self.slider.setValue(self._value_to_slider(self.value))
-        self.slider.setMinimumWidth(150)
+        self.slider.setMaximumWidth(200)
         self.slider.setStyleSheet("""
             QSlider::groove:horizontal {
                 border: none;
@@ -76,7 +76,8 @@ class Slider(QWidget):
         # QLineEdit with double validator
         self.input_box = QLineEdit()
         self.input_box.setText(f"{self.value:.5f}")
-        self.input_box.setMaximumWidth(80)
+        self.input_box.setMinimumWidth(80)
+        self.input_box.setMaximumWidth(140)
         self.input_box.setAlignment(Qt.AlignLeft)
         self.input_box.setStyleSheet("""
             QLineEdit { 
@@ -85,6 +86,7 @@ class Slider(QWidget):
                 background-color: white;
                 color: #000;
                 font-size: 12px;
+                font-family: 'Courier New', monospace;
             }
         """)
         validator = QDoubleValidator(min_val, max_val, 5)
@@ -220,6 +222,7 @@ class Visualizer(QWidget):
             pattern=self.pattern,
             step_exporter=self.step_exporter,
         )
+        self.parameters = self.assembly_builder.parameters
         self.assembly_params = self.assembly_builder.assembly
         self.spiral_params = self.assembly_builder.spiral
         self.thick = 0.544  # Default conductor width used for coil spacing
@@ -686,6 +689,7 @@ class Visualizer(QWidget):
             if new_spacing >= 0.0:
                 self.assembly_params.spacing = new_spacing
                 self.assembly_params.update_offset_from_coil()
+                self.parameters.pattern.corner_margin = max(0.0, self.assembly_params.spacing * 2.0)
                 self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
                 self._reset_assembly_view()
                 self._update_views_without_chart()
@@ -857,38 +861,40 @@ class Visualizer(QWidget):
         self.sliders = []
         self.slider_map = {}
 
-        sliders_data = self.assembly_builder.get_pattern_variables()
-        for data in sliders_data:
+        pattern_data = self.assembly_builder.get_pattern_variables()
+        for data in pattern_data:
             label = data['label']
-            
-            # Skip width and height - they are now input boxes
-            if label in ['width', 'height']:
+
+            # Skip width and height - they are controlled via input boxes
+            if label in ['w', 'h']:
                 continue
-            
+
             slider = Slider(
                 label=label,
                 min_val=data['min'],
                 max_val=data['max'],
                 initial=data['value'],
-                step=data.get('step', 0.05)
+                step=data.get('step', 0.001)
             )
             slider.valueChanged.connect(self._on_slider_changed)
+            slider.setEnabled(data.get('enabled', True))
             self.sliders.append(slider)
             self.slider_map[label] = slider
             self.slider_layout.addWidget(slider)
 
-        # Assembly count control
-        count_slider = Slider(
-            label='count',
-            min_val=1,
-            max_val=600,
-            initial=self.assembly_params.count,
-            step=1
-        )
-        count_slider.valueChanged.connect(self._on_assembly_slider_changed)
-        self.sliders.append(count_slider)
-        self.slider_map['count'] = count_slider
-        self.slider_layout.addWidget(count_slider)
+        for data in self.assembly_builder.get_assembly_variables():
+            label = data['label']
+            slider = Slider(
+                label=label,
+                min_val=data['min'],
+                max_val=data['max'],
+                initial=data['value'],
+                step=data.get('step', 1.0)
+            )
+            slider.valueChanged.connect(self._on_assembly_slider_changed)
+            self.sliders.append(slider)
+            self.slider_map[label] = slider
+            self.slider_layout.addWidget(slider)
 
         self.slider_layout.addStretch()
 
@@ -911,8 +917,8 @@ class Visualizer(QWidget):
     
     def _on_assembly_slider_changed(self, label, value):
         """Handle assembly slider changes - update assembly parameters and refresh"""
-        if label == 'count':
-            self.assembly_params.count = int(value)
+        self.assembly_builder.set_assembly_variable(label, value)
+        if label == 'cnt':
             self._reset_assembly_view()
         
         # Only redraw assembly, don't auto-update 3D
@@ -921,8 +927,9 @@ class Visualizer(QWidget):
     def _update_slider_ranges(self):
         """Update slider min/max ranges based on current pattern dimensions"""
         # Get updated variable info from pattern
-        variables = self.assembly_builder.get_pattern_variables()
-        var_dict = {v['label']: v for v in variables}
+        pattern_vars = self.assembly_builder.get_pattern_variables()
+        assembly_vars = self.assembly_builder.get_assembly_variables()
+        var_dict = {v['label']: v for v in (pattern_vars + assembly_vars)}
 
         for label, slider in self.slider_map.items():
             if label in var_dict:
@@ -931,6 +938,7 @@ class Visualizer(QWidget):
                     var_dict[label]['max'],
                     var_dict[label].get('step', slider.step)
                 )
+                slider.setEnabled(var_dict[label].get('enabled', True))
     
     def _update_sliders_from_pattern(self, skip_label=None):
         """Update all slider values from pattern (after constraints applied)
@@ -938,7 +946,9 @@ class Visualizer(QWidget):
         Args:
             skip_label: Optional label to skip updating (e.g., the slider user is currently changing)
         """
-        values = self.assembly_builder.get_pattern_values()
+        values = {}
+        values.update(self.assembly_builder.get_pattern_values())
+        values.update(self.assembly_builder.get_assembly_values())
 
         for label, slider in self.slider_map.items():
             if label == skip_label:

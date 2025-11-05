@@ -65,6 +65,9 @@ class Pattern:
         self.vbh_bottom = max(0.0, half_height - self.vth_bottom)
         self.vbh_top = max(0.0, half_height - self.vth)
 
+        # Allow UI-controlled extension beyond geometric min corner limit
+        self.corner_margin = 0.0
+
         # Superellipse helper
         self.superellipse = Superellipse.get_instance()
         self.superellipse.set_exponents(self.exponent, self.exponent_m)
@@ -127,14 +130,16 @@ class Pattern:
             self.vrw_bottom = max(0.0, half_width - self.vlw_bottom)
             self.vth_bottom = self.vth
 
-            # Mirror values to keep halves in sync
-            self.corner_top_value = min(self.vth, self.vlw)
-            self.corner_bottom_value = min(self.vth_bottom, self.vlw_bottom)
+            # Mirror values to keep halves in sync while respecting spacing allowance
+            corner_max = min(self.vth, self.vlw) + self.corner_margin
+            corner_bottom_max = min(self.vth_bottom, self.vlw_bottom) + self.corner_margin
+            self.corner_top_value = min(self.corner_top_value, corner_max)
+            self.corner_bottom_value = min(self.corner_bottom_value, corner_bottom_max)
             self.vbh_bottom = self.vbh
             self.vbh_top = max(0.0, half_height - self.vth)
         else:
             # Independent corner sliders drive top/bottom radii
-            max_corner = min(half_width, half_height)
+            max_corner = min(half_width, half_height) + self.corner_margin
             self.corner_top_value = self._clamp(self.corner_top_value, 0.0, max_corner)
             self.corner_bottom_value = self._clamp(self.corner_bottom_value, 0.0, max_corner)
 

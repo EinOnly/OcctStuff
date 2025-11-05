@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from parameter import AssemblyParameters, SpiralParameters
+from parameter import AssemblyParameters, Parameter, SpiralParameters
 from pattern import Pattern
 from curve import SpiralMapper
 from step import StepExporter, SpiralSurfaceBuilder
@@ -43,6 +43,7 @@ class AssemblyBuilder:
         self.assembly = assembly or AssemblyParameters()
         self.spiral = spiral or SpiralParameters()
         self.step_exporter = step_exporter or StepExporter(thickness=self.assembly.layer_thickness)
+        self.parameters = Parameter(self.pattern, self.assembly, self.spiral)
 
     # ------------------------------------------------------------------ #
     # Pattern accessors and modifiers
@@ -61,25 +62,25 @@ class AssemblyBuilder:
         self.pattern.reset_with_dimensions(current_width, current_height)
 
     def get_pattern_variables(self):
-        return self.pattern.GetVariables()
+        return self.parameters.pattern_specs()
 
     def get_pattern_mode(self) -> str:
         return self.pattern.get_mode()
 
     def set_pattern_variable(self, label: str, value: float):
-        self.pattern.SetVariable(label, value)
+        self.parameters.set_pattern_value(label, value)
 
     def get_pattern_values(self) -> Dict[str, float]:
-        return {
-            'width': self.pattern.width,
-            'height': self.pattern.height,
-            'vbh': self.pattern.vbh,
-            'vlw_top': self.pattern.vlw,
-            'vlw_bottom': self.pattern.vlw_bottom,
-            'corner_bottom': self.pattern.corner_bottom_value,
-            'corner_top': self.pattern.corner_top_value,
-            'exponent': self.pattern.exponent,
-        }
+        return self.parameters.pattern_values()
+
+    def get_assembly_variables(self) -> List[Dict[str, float]]:
+        return self.parameters.assembly_specs()
+
+    def set_assembly_variable(self, label: str, value: float):
+        self.parameters.set_assembly_value(label, value)
+
+    def get_assembly_values(self) -> Dict[str, float]:
+        return self.parameters.assembly_values()
 
     def snapshot_pattern(self) -> Dict[str, float]:
         return self.pattern.snapshot()
