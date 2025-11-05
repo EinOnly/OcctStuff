@@ -132,6 +132,13 @@ class Parameter:
                 raise ValueError(f"Unknown pattern parameter: {label}")
         self._pattern.SetVariable(original, self._fmt(value))
 
+    def set_mode(self, mode: str):
+        self._pattern.corner_margin = max(0.0, self._assembly.spacing * 2.0)
+        self._pattern.set_mode(mode)
+
+    def get_mode(self) -> str:
+        return self._pattern.get_mode()
+
     def assembly_specs(self) -> List[Dict[str, float]]:
         count_max = 96
         return [{

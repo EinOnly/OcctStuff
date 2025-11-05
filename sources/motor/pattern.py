@@ -70,6 +70,7 @@ class Pattern:
 
         # Manual mode control (default based on exponent)
         self.mode = 'A' if math.isclose(self.exponent, 2.0, abs_tol=self._EXP_TOLERANCE) else 'B'
+        self._symmetric_envelope: List[Tuple[float, float]] = []
 
         # Superellipse helper
         self.superellipse = Superellipse.get_instance()
@@ -81,6 +82,7 @@ class Pattern:
         """Reset pattern with new width and height, reinitializing all parameters."""
         self.width = max(0.0, width)
         self.height = max(0.0, height)
+        self._symmetric_envelope = []
 
         # Reinitialize core parameters
         half_width = self.width / 2.0
@@ -116,6 +118,7 @@ class Pattern:
         return self.mode == 'A'
 
     def _apply_constraints(self):
+        self._symmetric_envelope = []
         half_width = max(0.0, self.width / 2.0)
         half_height = max(0.0, self.height / 2.0)
 
@@ -329,6 +332,12 @@ class Pattern:
         self.mode = normalized
         self.reset_with_dimensions(self.width, self.height)
 
+    def GetSymmetricEnvelope(self) -> List[Tuple[float, float]]:
+        """Return the cached symmetric closed polygon, computing if needed."""
+        if not self._symmetric_envelope:
+            self.GetSymmetricCurveArea()
+        return list(self._symmetric_envelope)
+
     # --------------------------------------------------------------------- #
     # Geometry helpers
     # --------------------------------------------------------------------- #
@@ -436,10 +445,50 @@ class Pattern:
 
         return curve
 
+    def _build_clipped_left_curve(self) -> List[Tuple[float, float]]:
+        """Return left curve clamped to the symmetry axis."""
+        raw_curve = self.GetCurve()
+        if not raw_curve:
+            return []
+
+        center_x = self.width / 2.0
+        left_path: List[Tuple[float, float]] = []
+
+        def add_point(pt: Tuple[float, float]):
+            if not left_path or not self._points_close(left_path[-1], pt):
+                left_path.append(pt)
+
+        for idx, (x, y) in enumerate(raw_curve):
+            x_clamped = min(x, center_x)
+            add_point((x_clamped, y))
+
+            if idx >= len(raw_curve) - 1:
+                break
+
+            x2, y2 = raw_curve[idx + 1]
+            crosses_center = (x - center_x) * (x2 - center_x) < 0.0
+            if crosses_center and not math.isclose(x2, x, abs_tol=POINT_EPSILON):
+                t = (center_x - x) / (x2 - x)
+                t = max(0.0, min(1.0, t))
+                y_cross = y + t * (y2 - y)
+                add_point((center_x, y_cross))
+            elif x > center_x and x2 > center_x:
+                add_point((center_x, y2))
+
+        if left_path:
+            left_path[0] = (center_x, left_path[0][1])
+            left_path[-1] = (center_x, left_path[-1][1])
+
+        return left_path
+
+    def GetClippedLeftCurve(self) -> List[Tuple[float, float]]:
+        """Expose the symmetry-clamped left curve for rendering/export."""
+        return self._build_clipped_left_curve()
+
     def GetSegments(self, assembly_offset: float | None = None, space: float = 0.1
                     ) -> Dict[str, List[Tuple[float, float]]]:
         bbox = self.GetBbox()
-        curve_left = self.GetCurve()
+        curve_left = self.GetClippedLeftCurve()
 
         result = {
             'bbox_left': bbox['bbox_left'],
@@ -641,78 +690,37 @@ class Pattern:
         return s1 / s2
 
     def GetSymmetricCurveArea(self) -> float:
-        """
-        Calculate area of the closed shape formed by the left curve 
-        and its symmetric reflection along the y-axis (vertical symmetry).
-        
-        The curve goes from bottom to top on the left, then mirrors back 
-        down on the right side to form a closed shape.
-        
-        Returns:
-            Area in mm²
-        """
-        curve_left = self.GetCurve()
-        if not curve_left or len(curve_left) < 2:
+        """Area enclosed by the symmetry-clamped envelope."""
+        left_path = self._build_clipped_left_curve()
+        if not left_path or len(left_path) < 2:
+            self._symmetric_envelope = []
             return 0.0
-        
-        # Mirror the left curve along the vertical axis at x = width/2
+
         center_x = self.width / 2.0
 
-        def clamp_point(x: float, y: float) -> Tuple[float, float]:
-            """Clamp point to center line if it crosses to the right side."""
-            return (min(x, center_x), y)
+        right_path: List[Tuple[float, float]] = []
+        for x, y in reversed(left_path):
+            mirrored = (2 * center_x - x, y)
+            if not right_path or not self._points_close(right_path[-1], mirrored):
+                right_path.append(mirrored)
 
-        # Clamp any overshoot beyond the centre line and insert intersection points.
-        clamped_curve: List[Tuple[float, float]] = []
-        for idx, (x1, y1) in enumerate(curve_left):
-            x1c, y1c = clamp_point(x1, y1)
-            if not clamped_curve or not self._points_close(clamped_curve[-1], (x1c, y1c)):
-                clamped_curve.append((x1c, y1c))
+        envelope: List[Tuple[float, float]] = list(left_path)
+        for pt in right_path:
+            if not envelope or not self._points_close(envelope[-1], pt):
+                envelope.append(pt)
 
-            if idx == len(curve_left) - 1:
-                break
+        if envelope and not self._points_close(envelope[0], envelope[-1]):
+            envelope.append(envelope[0])
 
-            x2, y2 = curve_left[idx + 1]
-            # If segment crosses the centre line, add the intersection.
-            if x1 > center_x and x2 < center_x or x1 < center_x and x2 > center_x:
-                if not math.isclose(x2, x1, abs_tol=POINT_EPSILON):
-                    t = (center_x - x1) / (x2 - x1)
-                    t = max(0.0, min(1.0, t))
-                    y_cross = y1 + t * (y2 - y1)
-                    clamped_curve.append((center_x, y_cross))
-            elif x1 > center_x and x2 > center_x:
-                # Entire segment to the right; collapse to centre
-                if not clamped_curve or not self._points_close(clamped_curve[-1], (center_x, y2)):
-                    clamped_curve.append((center_x, y2))
+        self._symmetric_envelope = envelope
 
-        if not clamped_curve:
-            return 0.0
-
-        # Ensure the path starts/ends on the centre line to create a solid envelope.
-        start_y = clamped_curve[0][1]
-        end_y = clamped_curve[-1][1]
-        clamped_curve[0] = (center_x, start_y)
-        clamped_curve[-1] = (center_x, end_y)
-
-        # Build closed polygon: left curve (bottom to top) + mirrored curve (top to bottom)
-        closed_polygon: List[Tuple[float, float]] = list(clamped_curve)
-        for x, y in reversed(clamped_curve):
-            x_mirrored = 2 * center_x - x
-            closed_polygon.append((x_mirrored, y))
-
-        if closed_polygon and not self._points_close(closed_polygon[0], closed_polygon[-1]):
-            closed_polygon.append(closed_polygon[0])
-
-        # Calculate area using shoelace formula
         area = 0.0
-        n = len(closed_polygon)
-        for i in range(n):
-            x1, y1 = closed_polygon[i]
-            x2, y2 = closed_polygon[(i + 1) % n]
+        for i in range(len(envelope) - 1):
+            x1, y1 = envelope[i]
+            x2, y2 = envelope[i + 1]
             area += x1 * y2 - x2 * y1
-        
-        return abs(area) / 2.0
 
+        return abs(area) / 2.0
     def GetResistance(self, offset: float, space: float, thick: float = 0.047, rho: float = 1.724e-8) -> float:
         """
         Calculate electrical resistance for flat conductor in motor slot.

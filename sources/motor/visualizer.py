@@ -1178,9 +1178,15 @@ class Visualizer(QWidget):
         ys = [p[1] for p in bbox] + [bbox[0][1]]
         self.pattern_ax.plot(xs, ys, 'k-', linewidth=0.5, alpha=0.2)
         
-        # Draw the closed shape if available
-        envelope = curves.get('envelope') if isinstance(curves, dict) else None
-        shape = envelope if envelope else curves.get('left', [])
+        # Draw the closed envelope outline if available
+        envelope = curves.get('envelope', [])
+        if envelope:
+            ex = [p[0] for p in envelope]
+            ey = [p[1] for p in envelope]
+            self.pattern_ax.plot(ex, ey, color='#ff6600', linewidth=1.2, alpha=0.8, linestyle='--')
+        
+        # Fill the primary pattern region using the original left curve
+        shape = curves.get('left', [])
         if shape:
             xs = [p[0] for p in shape]
             ys = [p[1] for p in shape]
