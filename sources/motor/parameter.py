@@ -320,7 +320,7 @@ class AssemblyParameters:
     Parameters controlling how 2D patterns are arrayed before mapping into 3D.
     """
     count: int = 18
-    spacing: float = 0.06
+    spacing: float = 0.05
     twist_enabled: bool = False
     layer_thickness: float = 0.047
     coil_width: float = 0.544

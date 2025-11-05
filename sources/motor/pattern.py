@@ -115,7 +115,8 @@ class Pattern:
         if self._is_mode_a():
             # Clamp user controlled parameters
             # In Mode A (exponent == 2), vlw max is reduced by 0.05
-            vlw_max = max(0.0, half_width - 0.05)
+            # vlw_max = max(0.0, half_width - 0.05)
+            vlw_max = max(0.0, half_width)
             self.vbh = self._clamp(self.vbh, 0.0, half_height)
             self.vlw = self._clamp(self.vlw, 0.0, vlw_max)
             self.vlw_bottom = self._clamp(self.vlw_bottom, 0.0, vlw_max)
@@ -169,7 +170,7 @@ class Pattern:
         self.width = max(0.0, state['width'])
         self.height = max(0.0, state['height'])
         self.exponent = self._clamp(state['exponent'], 0.5, 2.0)
-        self.exponent_m = self._clamp(state.get('exponent_m', self.exponent_m), 0.5, 2.0)
+        self.exponent_m = self._clamp(state.get('exponent_m', self.exponent_m), 0.1, 2.0)
         self.superellipse.set_exponents(self.exponent, self.exponent_m)
 
         self.vbh = max(0.0, state['vbh'])
@@ -210,7 +211,7 @@ class Pattern:
 
         if self._is_mode_a():
             # When exponent == 2 (Mode A), reduce vlw max by 0.05
-            vlw_max = max(0.0, half_width - 0.05)
+            vlw_max = max(0.0, half_width)
             variables.extend([
                 {
                     'label': 'vbh',
@@ -263,7 +264,7 @@ class Pattern:
         variables.append({
             'label': 'exponent_m',
             'value': self.exponent_m,
-            'min': 0.5,
+            'min': 0.1,
             'max': 2.0,
             'step': 0.01,
         })
@@ -310,7 +311,7 @@ class Pattern:
                 self.vbh = self._clamp(self.vbh, 0.0, half_height)
                 self.vlw = self._clamp(self.vlw, 0.0, half_width)
         elif label in ('exponent_m', 'm'):
-            value = self._clamp(value, 0.5, 2.0)
+            value = self._clamp(value, 0.1, 2.0)
             self.exponent_m = value
             self.superellipse.set_exponents(self.exponent, self.exponent_m)
         else:

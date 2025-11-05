@@ -215,7 +215,7 @@ class Visualizer(QWidget):
         
         # OCCT Step exporter
         self.step_exporter = StepExporter(thickness=0.047)
-        self.pattern = Pattern(width=4.702, height=7.5)
+        self.pattern = Pattern(width=5.89, height=7.5)
         self.assembly_builder = AssemblyBuilder(
             pattern=self.pattern,
             step_exporter=self.step_exporter,
