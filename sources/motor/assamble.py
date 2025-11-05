@@ -65,13 +65,16 @@ class AssemblyBuilder:
         return self.parameters.pattern_specs()
 
     def get_pattern_mode(self) -> str:
-        return self.pattern.get_mode()
+        return self.parameters.get_mode()
 
     def set_pattern_variable(self, label: str, value: float):
         self.parameters.set_pattern_value(label, value)
 
     def get_pattern_values(self) -> Dict[str, float]:
         return self.parameters.pattern_values()
+
+    def set_pattern_mode(self, mode: str):
+        self.parameters.set_mode(mode)
 
     def get_assembly_variables(self) -> List[Dict[str, float]]:
         return self.parameters.assembly_specs()
@@ -192,9 +195,10 @@ class AssemblyBuilder:
     def _prepare_curves(self) -> Dict[str, List[Tuple[float, float]]]:
         left_curve = self._compute_base_shape()
         if len(left_curve) < 3:
-            return {'left': [], 'right': []}
+            return {'left': [], 'right': [], 'envelope': []}
         right_curve = self._mirror_shape(left_curve)
-        return {'left': left_curve, 'right': right_curve}
+        envelope = self.pattern.GetSymmetricEnvelope()
+        return {'left': left_curve, 'right': right_curve, 'envelope': envelope}
 
     def get_curves(self) -> Dict[str, List[Tuple[float, float]]]:
         """

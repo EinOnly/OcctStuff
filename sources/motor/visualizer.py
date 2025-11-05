@@ -213,6 +213,7 @@ class Visualizer(QWidget):
         self.multiple = multiple
         self.sliders = []
         self.slider_map = {}
+        self.mode_button = None
         self.assembly_view_limits = None
         
         # OCCT Step exporter
@@ -608,7 +609,28 @@ class Visualizer(QWidget):
         """)
         self.save_step_button.clicked.connect(self._on_save_step_clicked)
         button_row.addWidget(self.save_step_button)
-        
+
+        self.mode_button = QPushButton()
+        self.mode_button.setStyleSheet("""
+            QPushButton {
+                background-color: #17a2b8;
+                color: white;
+                border: none;
+                padding: 8px 6px;
+                font-size: 9px;
+                font-weight: bold;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #138496;
+            }
+            QPushButton:pressed {
+                background-color: #117a8b;
+            }
+        """)
+        self.mode_button.clicked.connect(self._on_mode_toggle)
+        button_row.addWidget(self.mode_button)
+
         # Twist button in the same row
         self.twist_button = QPushButton("Twist")
         self.twist_button.setCheckable(True)
@@ -634,8 +656,9 @@ class Visualizer(QWidget):
         """)
         self.twist_button.clicked.connect(self._on_twist_clicked)
         button_row.addWidget(self.twist_button)
-        
+
         panel_layout.addLayout(button_row)
+        self._update_mode_button()
         
         input_panel.setLayout(panel_layout)
         self.input_layout.addWidget(input_panel)
@@ -693,6 +716,8 @@ class Visualizer(QWidget):
                 self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
                 self._reset_assembly_view()
                 self._update_views_without_chart()
+                self._update_slider_ranges()
+                self._update_sliders_from_pattern()
         except ValueError:
             self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
     
@@ -707,6 +732,26 @@ class Visualizer(QWidget):
         
         # Update all views
         self._update_views_without_chart()
+
+    def _on_mode_toggle(self):
+        """Manually switch between pattern modes."""
+        current = self.assembly_builder.get_pattern_mode()
+        new_mode = 'B' if current == 'A' else 'A'
+        self.assembly_builder.set_pattern_mode(new_mode)
+        self._update_mode_button()
+        self._build_slider_panel()
+        self._update_slider_ranges()
+        self._update_sliders_from_pattern()
+        self.chart_needs_update = True
+        self._update_views_without_chart()
+
+    def _update_mode_button(self):
+        """Refresh mode button label to reflect active pattern mode."""
+        if self.mode_button is None:
+            return
+        mode = self.assembly_builder.get_pattern_mode()
+        label = "Mode A" if mode == 'A' else "Mode B"
+        self.mode_button.setText(label)
     
     def _rebuild_ui(self):
         """Rebuild UI after dimension changes (with full chart update)."""
@@ -896,6 +941,7 @@ class Visualizer(QWidget):
             self.slider_map[label] = slider
             self.slider_layout.addWidget(slider)
 
+        self._update_mode_button()
         self.slider_layout.addStretch()
 
     def _on_slider_changed(self, label, value):
@@ -1133,8 +1179,9 @@ class Visualizer(QWidget):
         self.pattern_ax.plot(xs, ys, 'k-', linewidth=0.5, alpha=0.2)
         
         # Draw the closed shape if available
-        if curves['left']:
-            shape = curves['left']
+        envelope = curves.get('envelope') if isinstance(curves, dict) else None
+        shape = envelope if envelope else curves.get('left', [])
+        if shape:
             xs = [p[0] for p in shape]
             ys = [p[1] for p in shape]
             # Fill the shape with light color

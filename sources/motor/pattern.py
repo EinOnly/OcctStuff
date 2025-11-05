@@ -68,6 +68,9 @@ class Pattern:
         # Allow UI-controlled extension beyond geometric min corner limit
         self.corner_margin = 0.0
 
+        # Manual mode control (default based on exponent)
+        self.mode = 'A' if math.isclose(self.exponent, 2.0, abs_tol=self._EXP_TOLERANCE) else 'B'
+
         # Superellipse helper
         self.superellipse = Superellipse.get_instance()
         self.superellipse.set_exponents(self.exponent, self.exponent_m)
@@ -108,8 +111,9 @@ class Pattern:
         return max(minimum, min(maximum, value))
 
     def _is_mode_a(self, exponent: float | None = None) -> bool:
-        exp = self.exponent if exponent is None else exponent
-        return math.isclose(exp, 2.0, abs_tol=self._EXP_TOLERANCE)
+        if exponent is not None:
+            return math.isclose(exponent, 2.0, abs_tol=self._EXP_TOLERANCE)
+        return self.mode == 'A'
 
     def _apply_constraints(self):
         half_width = max(0.0, self.width / 2.0)
@@ -159,6 +163,7 @@ class Pattern:
         return {
             'width': self.width,
             'height': self.height,
+            'mode': self.mode,
             'exponent': self.exponent,
             'exponent_m': self.exponent_m,
             'vbh': self.vbh,
@@ -174,6 +179,7 @@ class Pattern:
         """Restore state captured by snapshot()."""
         self.width = max(0.0, state['width'])
         self.height = max(0.0, state['height'])
+        self.mode = state.get('mode', self.mode)
         self.exponent = self._clamp(state['exponent'], 0.5, 2.0)
         self.exponent_m = self._clamp(state.get('exponent_m', self.exponent_m), 0.1, 2.0)
         self.superellipse.set_exponents(self.exponent, self.exponent_m)
@@ -191,7 +197,7 @@ class Pattern:
     # --------------------------------------------------------------------- #
     def get_mode(self) -> str:
         """Return current pattern mode identifier."""
-        return 'A' if self._is_mode_a() else 'B'
+        return self.mode
 
     def GetVariables(self) -> List[Dict[str, float]]:
         half_width = max(0.0, self.width / 2.0)
@@ -299,22 +305,9 @@ class Pattern:
             self.corner_top_value = sanitized
             self.corner_bottom_value = sanitized
         elif label == 'exponent':
-            prev_mode_a = self._is_mode_a()
             value = self._clamp(value, 0.5, 2.0)
             self.exponent = value
             self.superellipse.set_exponents(self.exponent, self.exponent_m)
-
-            if prev_mode_a and not self._is_mode_a():
-                # Preserve smooth transition into mode B
-                carry = min(self.vth, self.vlw)
-                self.corner_top_value = carry
-                self.corner_bottom_value = carry
-            elif not prev_mode_a and self._is_mode_a():
-                # Carry over previous straight portion as baseline
-                half_height = max(0.0, self.height / 2.0)
-                half_width = max(0.0, self.width / 2.0)
-                self.vbh = self._clamp(self.vbh, 0.0, half_height)
-                self.vlw = self._clamp(self.vlw, 0.0, half_width)
         elif label in ('exponent_m', 'm'):
             value = self._clamp(value, 0.1, 2.0)
             self.exponent_m = value
@@ -323,6 +316,18 @@ class Pattern:
             raise ValueError(f"Unknown parameter label: {label}")
 
         self._apply_constraints()
+
+    def set_mode(self, mode: str):
+        """Manually switch between Mode A and Mode B."""
+        normalized = mode.upper()
+        if normalized not in ('A', 'B'):
+            raise ValueError(f"Unknown mode: {mode}")
+        if self.mode == normalized:
+            # Still reset to default shape for explicit request
+            self.reset_with_dimensions(self.width, self.height)
+            return
+        self.mode = normalized
+        self.reset_with_dimensions(self.width, self.height)
 
     # --------------------------------------------------------------------- #
     # Geometry helpers
@@ -652,19 +657,52 @@ class Pattern:
         
         # Mirror the left curve along the vertical axis at x = width/2
         center_x = self.width / 2.0
-        
+
+        def clamp_point(x: float, y: float) -> Tuple[float, float]:
+            """Clamp point to center line if it crosses to the right side."""
+            return (min(x, center_x), y)
+
+        # Clamp any overshoot beyond the centre line and insert intersection points.
+        clamped_curve: List[Tuple[float, float]] = []
+        for idx, (x1, y1) in enumerate(curve_left):
+            x1c, y1c = clamp_point(x1, y1)
+            if not clamped_curve or not self._points_close(clamped_curve[-1], (x1c, y1c)):
+                clamped_curve.append((x1c, y1c))
+
+            if idx == len(curve_left) - 1:
+                break
+
+            x2, y2 = curve_left[idx + 1]
+            # If segment crosses the centre line, add the intersection.
+            if x1 > center_x and x2 < center_x or x1 < center_x and x2 > center_x:
+                if not math.isclose(x2, x1, abs_tol=POINT_EPSILON):
+                    t = (center_x - x1) / (x2 - x1)
+                    t = max(0.0, min(1.0, t))
+                    y_cross = y1 + t * (y2 - y1)
+                    clamped_curve.append((center_x, y_cross))
+            elif x1 > center_x and x2 > center_x:
+                # Entire segment to the right; collapse to centre
+                if not clamped_curve or not self._points_close(clamped_curve[-1], (center_x, y2)):
+                    clamped_curve.append((center_x, y2))
+
+        if not clamped_curve:
+            return 0.0
+
+        # Ensure the path starts/ends on the centre line to create a solid envelope.
+        start_y = clamped_curve[0][1]
+        end_y = clamped_curve[-1][1]
+        clamped_curve[0] = (center_x, start_y)
+        clamped_curve[-1] = (center_x, end_y)
+
         # Build closed polygon: left curve (bottom to top) + mirrored curve (top to bottom)
-        closed_polygon: List[Tuple[float, float]] = []
-        
-        # Add left curve points (bottom to top)
-        for x, y in curve_left:
-            closed_polygon.append((x, y))
-        
-        # Add mirrored curve points in reverse order (top to bottom)
-        for x, y in reversed(curve_left):
-            x_mirrored = 2 * center_x - x  # Mirror across center_x
+        closed_polygon: List[Tuple[float, float]] = list(clamped_curve)
+        for x, y in reversed(clamped_curve):
+            x_mirrored = 2 * center_x - x
             closed_polygon.append((x_mirrored, y))
-        
+
+        if closed_polygon and not self._points_close(closed_polygon[0], closed_polygon[-1]):
+            closed_polygon.append(closed_polygon[0])
+
         # Calculate area using shoelace formula
         area = 0.0
         n = len(closed_polygon)
