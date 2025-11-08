@@ -61,8 +61,6 @@ class Parameter:
         self._pattern.corner_margin = max(0.0, self._assembly.spacing * 2.0)
         enabled_map = {
             "vbh": mode == "A",
-            "corner_bottom": mode == "B",
-            "corner_top": mode == "B",
         }
 
         # Cache current pattern-provided ranges for active variables.
@@ -82,9 +80,16 @@ class Parameter:
         for original, short in self._PATTERN_LABEL_MAP.items():
             item = var_data.get(original)
             value = getattr(self._pattern, attr_lookup[original])
-            if item is not None:
-                min_val = item.get("min", value)
-                max_val = item.get("max", value)
+            range_source = item
+            if original == "corner_top" and mode == "A":
+                value = self._pattern.vlw
+                range_source = var_data.get("vlw_top") or range_source
+            elif original == "corner_bottom" and mode == "A":
+                value = self._pattern.vlw_bottom
+                range_source = var_data.get("vlw_bottom") or range_source
+            if range_source is not None:
+                min_val = range_source.get("min", value)
+                max_val = range_source.get("max", value)
             else:
                 min_val = value
                 max_val = value
@@ -108,6 +113,11 @@ class Parameter:
 
     def set_pattern_value(self, label: str, value: float) -> None:
         self._pattern.corner_margin = max(0.0, self._assembly.spacing * 2.0)
+        mode = self._pattern.get_mode()
+        if label in {"ct", "cb"} and mode == "A":
+            target = "vlw_top" if label == "ct" else "vlw_bottom"
+            self._pattern.SetVariable(target, self._fmt(value))
+            return
         original = self._pattern_reverse.get(label)
         if original is None:
             if label in self._PATTERN_LABEL_MAP:

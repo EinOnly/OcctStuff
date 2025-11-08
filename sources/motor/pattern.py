@@ -326,11 +326,19 @@ class Pattern:
         if normalized not in ('A', 'B'):
             raise ValueError(f"Unknown mode: {mode}")
         if self.mode == normalized:
-            # Still reset to default shape for explicit request
-            self.reset_with_dimensions(self.width, self.height)
             return
+
+        if normalized == 'A':
+            # Carry existing corner definitions into straight/corner form
+            self.vlw = min(self.corner_top_value, max(0.0, self.width / 2.0))
+            self.vlw_bottom = min(self.corner_bottom_value, max(0.0, self.width / 2.0))
+        else:
+            # Carry straight definitions into independent corner sliders
+            self.corner_top_value = min(self.vth, self.vlw)
+            self.corner_bottom_value = min(self.vth_bottom, self.vlw_bottom)
+
         self.mode = normalized
-        self.reset_with_dimensions(self.width, self.height)
+        self._apply_constraints()
 
     def GetSymmetricEnvelope(self) -> List[Tuple[float, float]]:
         """Return the cached symmetric closed polygon, computing if needed."""

@@ -247,6 +247,17 @@ class Visualizer(QWidget):
         self.assembly_params.update_offset_from_coil()
         self.assembly_params.count = assembly_cfg.get("count", self.assembly_params.count)
 
+        # Determine initial mode from settings
+        has_ct_cb = pattern_cfg.get('ct') is not None or pattern_cfg.get('cb') is not None
+        has_epn_epm = pattern_cfg.get('epn') is not None or pattern_cfg.get('epm') is not None
+        
+        # Set mode before applying parameters
+        if has_ct_cb and not has_epn_epm:
+            self.assembly_builder.set_pattern_mode('A')
+        elif has_epn_epm and not has_ct_cb:
+            self.assembly_builder.set_pattern_mode('B')
+        
+        # Apply pattern parameters from settings
         pattern_defaults = {
             'vb': pattern_cfg.get('vbh'),
             'ct': pattern_cfg.get('ct'),
@@ -257,6 +268,9 @@ class Visualizer(QWidget):
         for label, value in pattern_defaults.items():
             if value is not None:
                 self.assembly_builder.set_pattern_variable(label, value)
+        
+        self._invalidate_chart_cache()
+        self.chart_needs_update = True
 
         self.spacing_input = None
         
@@ -320,7 +334,7 @@ class Visualizer(QWidget):
         self.slider_layout.setContentsMargins(5, 5, 5, 5)
         self.slider_layout.setSpacing(5)
         self.windowSliders.setLayout(self.slider_layout)
-        
+
         # Create matplotlib canvas for assembly window
         self.assembly_figure = Figure(figsize=(assembly_width/100, height/100), dpi=100)
         self.assembly_canvas = FigureCanvas(self.assembly_figure)
@@ -347,7 +361,7 @@ class Visualizer(QWidget):
         self.input_layout = QVBoxLayout()
         self.windowInput.setLayout(self.input_layout)
         self._build_input_panel()
-        self._build_slider_panel()
+        QTimer.singleShot(0, self._initialize_ui_from_settings)
         
         # Add widgets to grid layout for aligned columns
         main_layout.addWidget(self.windowInput, 0, 0)
@@ -824,14 +838,31 @@ class Visualizer(QWidget):
         mode = self.assembly_builder.get_pattern_mode()
         label = "Mode A" if mode == 'A' else "Mode B"
         self.mode_button.setText(label)
+
+    def _initialize_ui_from_settings(self):
+        """Initialize UI components from settings and trigger full update."""
+        self._sync_input_fields()
+        self._build_slider_panel()
+        self._update_slider_ranges()
+        self._update_sliders_from_pattern()
+        
+        # Draw views without calculating chart (will be done on first show)
+        self._update_views_without_chart()
+
+    def _sync_input_fields(self):
+        """Synchronize input widgets with current state."""
+        if not hasattr(self, 'width_input'):
+            return
+        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
+        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
+        if hasattr(self, 'coil_width_input'):
+            self.coil_width_input.setText(f"{self.coil_width:.5f}")
+        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
     
     def _rebuild_ui(self):
         """Rebuild UI after dimension changes (with full chart update)."""
         # Update input boxes
-        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
-        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
-        self.coil_width_input.setText(f"{self.coil_width:.5f}")
-        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
+        self._sync_input_fields()
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -845,10 +876,7 @@ class Visualizer(QWidget):
     def _rebuild_ui_without_chart(self):
         """Rebuild UI after dimension changes (skip chart calculation)."""
         # Update input boxes
-        self.width_input.setText(f"{self.assembly_builder.width:.5f}")
-        self.height_input.setText(f"{self.assembly_builder.height:.5f}")
-        self.coil_width_input.setText(f"{self.coil_width:.5f}")
-        self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
+        self._sync_input_fields()
         
         # Rebuild sliders
         self._build_slider_panel()
@@ -1048,9 +1076,16 @@ class Visualizer(QWidget):
     def _update_views(self):
         """Update pattern, chart and assembly visualizations (full update with chart)"""
         self._draw_pattern()
+        # After drawing pattern, update sliders to reflect actual constraint-applied values
+        self._update_sliders_from_pattern()
+        
         if self.chart_needs_update:
             self._draw_chart()
             self.chart_needs_update = False
+            # After chart calculation, ensure sliders still reflect current pattern values
+            # (in case chart modified and restored the pattern)
+            self._update_sliders_from_pattern()
+        
         self._draw_assembly()
         # Don't auto-update 3D model - only update when 3D button is clicked
     
@@ -1599,7 +1634,7 @@ class Visualizer(QWidget):
         if self._chart_info_artist is not None:
             try:
                 self._chart_info_artist.remove()
-            except ValueError:
+            except (ValueError, NotImplementedError):
                 pass
             self._chart_info_artist = None
 
@@ -1654,7 +1689,8 @@ class Visualizer(QWidget):
     def show(self, box=None, pattern=None):
         """Display the GUI and start the Qt application"""
         super().show()
-        # Use QTimer to delay initial draw until window is fully rendered
+        # Trigger full update with chart calculation when window is shown
+        # This happens after _initialize_ui_from_settings has set up the UI
         QTimer.singleShot(0, self._update_views)
         
     @staticmethod
