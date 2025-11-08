@@ -6,7 +6,8 @@ import numpy as np
 from pattern import Pattern
 from assamble import AssemblyBuilder
 from step import StepExporter
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog, QProgressDialog)
+from settings import pattern_p
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QProgressDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
@@ -220,21 +221,43 @@ class Visualizer(QWidget):
         self.mode_button = None
         self.assembly_view_limits = None
         
+        cfg = pattern_p or {}
+        bbox_cfg = cfg.get("bbox", {})
+        pattern_cfg = cfg.get("pattern", {})
+        assembly_cfg = cfg.get("assembly", {})
+
+        extrude_thickness = pattern_cfg.get("thickness", 0.047)
+        coil_width_default = pattern_cfg.get("width", 0.544)
+        bbox_width = bbox_cfg.get("width", 5.89)
+        bbox_height = bbox_cfg.get("height", 7.5)
+
         # OCCT Step exporter
-        self.step_exporter = StepExporter(thickness=0.047)
-        self.pattern = Pattern(width=5.89, height=7.5)
+        self.step_exporter = StepExporter(thickness=extrude_thickness)
+        self.pattern = Pattern(width=bbox_width, height=bbox_height)
         self.assembly_builder = AssemblyBuilder(
             pattern=self.pattern,
             step_exporter=self.step_exporter,
         )
         self.parameters = self.assembly_builder.parameters
         self.assembly_params = self.assembly_builder.assembly
-        self.spiral_params = self.assembly_builder.spiral
-        self.thick = 0.544  # Default conductor width used for coil spacing
-        self.assembly_params.coil_width = self.thick
-        self.assembly_params.spacing = 0.06000
+        self.coil_width = coil_width_default
+        self.assembly_params.coil_width = self.coil_width
+        self.assembly_params.layer_thickness = extrude_thickness
+        self.assembly_params.spacing = assembly_cfg.get("spacing", self.assembly_params.spacing)
         self.assembly_params.update_offset_from_coil()
-        self.assembly_params.count = 8
+        self.assembly_params.count = assembly_cfg.get("count", self.assembly_params.count)
+
+        pattern_defaults = {
+            'vb': pattern_cfg.get('vbh'),
+            'ct': pattern_cfg.get('ct'),
+            'cb': pattern_cfg.get('cb'),
+            'epn': pattern_cfg.get('epn'),
+            'epm': pattern_cfg.get('epm'),
+        }
+        for label, value in pattern_defaults.items():
+            if value is not None:
+                self.assembly_builder.set_pattern_variable(label, value)
+
         self.spacing_input = None
         
         # Initialize the main window
@@ -313,11 +336,6 @@ class Visualizer(QWidget):
         assembly_layout.addWidget(self.assembly_canvas)
         self.windowAssamble.setLayout(assembly_layout)
         self.assembly_canvas.mpl_connect('scroll_event', self._on_assembly_scroll)
-        
-        # Spiral placement parameters (defaults follow curve.py constants)
-        self.spiral_radius = None
-        self.spiral_thickness = None
-        self.spiral_turns = None
         
         # Cache for chart data
         self.chart_needs_update = True
@@ -486,7 +504,7 @@ class Visualizer(QWidget):
         return super().eventFilter(obj, event)
     
     def _build_input_panel(self):
-        """Build input boxes for width, height, thick, and spacing parameters."""
+        """Build input boxes for width, height, coil width, and spacing parameters."""
         # Create a container widget for the input panel
         input_panel = QWidget()
         input_panel.setStyleSheet("background-color: white; border: 1px solid #ccc; border-radius: 3px;")
@@ -545,15 +563,15 @@ class Visualizer(QWidget):
         height_layout.addWidget(self.height_input, 1)  # Stretch factor 1
         panel_layout.addLayout(height_layout)
         
-        # Thick input
-        thick_layout = QHBoxLayout()
-        thick_layout.setSpacing(5)
-        thick_label = QLabel("Thick:")
-        thick_label.setMinimumWidth(45)
-        thick_label.setStyleSheet("font-size: 10px; color: #000;")
-        self.thick_input = QLineEdit()
-        self.thick_input.setText(f"{self.thick:.5f}")
-        self.thick_input.setStyleSheet("""
+        # Coil width input
+        coil_layout = QHBoxLayout()
+        coil_layout.setSpacing(5)
+        coil_label = QLabel("Coil W:")
+        coil_label.setMinimumWidth(45)
+        coil_label.setStyleSheet("font-size: 10px; color: #000;")
+        self.coil_width_input = QLineEdit()
+        self.coil_width_input.setText(f"{self.coil_width:.5f}")
+        self.coil_width_input.setStyleSheet("""
             QLineEdit { 
                 border: 1px solid #ccc;
                 padding: 3px; 
@@ -562,11 +580,11 @@ class Visualizer(QWidget):
                 font-size: 10px;
             }
         """)
-        self.thick_input.setValidator(QDoubleValidator(0.0, 100.0, 5))
-        self.thick_input.editingFinished.connect(self._on_thick_changed)
-        thick_layout.addWidget(thick_label)
-        thick_layout.addWidget(self.thick_input, 1)  # Stretch factor 1
-        panel_layout.addLayout(thick_layout)
+        self.coil_width_input.setValidator(QDoubleValidator(0.0, 100.0, 5))
+        self.coil_width_input.editingFinished.connect(self._on_coil_width_changed)
+        coil_layout.addWidget(coil_label)
+        coil_layout.addWidget(self.coil_width_input, 1)
+        panel_layout.addLayout(coil_layout)
 
         # Spacing input
         spacing_layout = QHBoxLayout()
@@ -741,20 +759,20 @@ class Visualizer(QWidget):
         except ValueError:
             self.height_input.setText(f"{self.assembly_builder.height:.5f}")
     
-    def _on_thick_changed(self):
-        """Handle thick input change - update assembly offset, but don't recalculate yet."""
+    def _on_coil_width_changed(self):
+        """Handle coil width input change - update assembly offset, but don't recalculate yet."""
         try:
-            new_thick = float(self.thick_input.text())
-            if new_thick > 0:
-                self.thick = new_thick
-                self.assembly_params.coil_width = self.thick
+            new_width = float(self.coil_width_input.text())
+            if new_width > 0:
+                self.coil_width = new_width
+                self.assembly_params.coil_width = self.coil_width
                 self.assembly_params.update_offset_from_coil()
                 self._invalidate_chart_cache()
                 self._reset_assembly_view()
                 # Don't trigger chart update - wait for calculate button
                 self._update_views_without_chart()
         except ValueError:
-            self.thick_input.setText(f"{self.thick:.5f}")
+            self.coil_width_input.setText(f"{self.coil_width:.5f}")
 
     def _on_spacing_changed(self):
         """Handle spacing input change - update assembly spacing and offset."""
@@ -812,7 +830,7 @@ class Visualizer(QWidget):
         # Update input boxes
         self.width_input.setText(f"{self.assembly_builder.width:.5f}")
         self.height_input.setText(f"{self.assembly_builder.height:.5f}")
-        self.thick_input.setText(f"{self.thick:.5f}")
+        self.coil_width_input.setText(f"{self.coil_width:.5f}")
         self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
         
         # Rebuild sliders
@@ -829,7 +847,7 @@ class Visualizer(QWidget):
         # Update input boxes
         self.width_input.setText(f"{self.assembly_builder.width:.5f}")
         self.height_input.setText(f"{self.assembly_builder.height:.5f}")
-        self.thick_input.setText(f"{self.thick:.5f}")
+        self.coil_width_input.setText(f"{self.coil_width:.5f}")
         self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
         
         # Rebuild sliders
@@ -850,7 +868,7 @@ class Visualizer(QWidget):
             traceback.print_exc()
     
     def _on_save_step_clicked(self):
-        """Save all array patterns to STEP file."""
+        """Save array patterns to STEP/STL/OBJ."""
         try:
             curves = self.assembly_builder.get_curves()
             left_curve = curves['left']
@@ -858,55 +876,18 @@ class Visualizer(QWidget):
             if not left_curve or not right_curve:
                 print("No valid shape to save")
                 return
-            options = ["Straight Array", "Spiral Coil", "Both"]
-            choice, ok = QInputDialog.getItem(
-                self,
-                "Select Geometry",
-                "Choose which arrangement to export:",
-                options,
-                current=0,
-                editable=False
-            )
-            if not ok:
-                print("STEP export cancelled")
-                return
-            
-            export_straight = choice in ("Straight Array", "Both")
-            export_spiral = choice in ("Spiral Coil", "Both")
-
+            flat_results = self.assembly_builder.build_flat_solids()
             all_shapes = []
-
-            if export_straight:
-                flat_results = self.assembly_builder.build_flat_solids()
-                for inst in flat_results.get('left', []):
-                    if inst.shape is not None:
-                        all_shapes.append(inst.shape)
-                    elif inst.error:
-                        print(f"Skipping flat left #{inst.index}: {inst.error}")
-                for inst in flat_results.get('right', []):
-                    if inst.shape is not None:
-                        all_shapes.append(inst.shape)
-                    elif inst.error:
-                        print(f"Skipping flat right #{inst.index}: {inst.error}")
-
-            if export_spiral:
-                spiral_results = self.assembly_builder.build_spiral_solids(
-                    radius_override=self.spiral_radius,
-                    thickness_override=self.spiral_thickness,
-                    turns_override=self.spiral_turns,
-                )
-                if spiral_results.get('length_warning'):
-                    print("Warning: Spiral length insufficient for export; truncating coil geometry.")
-                for inst in spiral_results.get('left', []):
-                    if inst.shape is not None:
-                        all_shapes.append(inst.shape)
-                    elif inst.error:
-                        print(f"Skipping spiral left #{inst.index}: {inst.error}")
-                for inst in spiral_results.get('right', []):
-                    if inst.shape is not None:
-                        all_shapes.append(inst.shape)
-                    elif inst.error:
-                        print(f"Skipping spiral right #{inst.index}: {inst.error}")
+            for inst in flat_results.get('left', []):
+                if inst.shape is not None:
+                    all_shapes.append(inst.shape)
+                elif inst.error:
+                    print(f"Skipping flat left #{inst.index}: {inst.error}")
+            for inst in flat_results.get('right', []):
+                if inst.shape is not None:
+                    all_shapes.append(inst.shape)
+                elif inst.error:
+                    print(f"Skipping flat right #{inst.index}: {inst.error}")
 
             if not all_shapes:
                 print("No shapes selected for export.")
@@ -1006,7 +987,7 @@ class Visualizer(QWidget):
 
         if label in {'cb', 'ct'}:
             self._invalidate_chart_cache(mode='B')
-        elif label in {'vb', 'vx_t', 'vx_b'}:
+        elif label == 'vb':
             self._invalidate_chart_cache(mode='A')
         elif label not in {'epn', 'epm'}:
             self._invalidate_chart_cache()
@@ -1191,36 +1172,6 @@ class Visualizer(QWidget):
                     self.viewer3d._display.DisplayShape(inst.shape, update=False, color='CYAN', transparency=0.3)
                 elif inst.error:
                     print(f"Flat right #{inst.index} error: {inst.error}")
-
-            spiral_results = self.assembly_builder.build_spiral_solids(
-                radius_override=self.spiral_radius,
-                thickness_override=self.spiral_thickness,
-                turns_override=self.spiral_turns,
-            )
-            if spiral_results.get('length_warning'):
-                print("Warning: Spiral length insufficient for requested array; truncating coil display.")
-
-            for inst in spiral_results.get('left', []):
-                if inst.shape is not None:
-                    self.viewer3d._display.DisplayShape(
-                        inst.shape,
-                        update=False,
-                        color='GREEN',
-                        transparency=0.35
-                    )
-                elif inst.error:
-                    print(f"Spiral left #{inst.index} error: {inst.error}")
-
-            for inst in spiral_results.get('right', []):
-                if inst.shape is not None:
-                    self.viewer3d._display.DisplayShape(
-                        inst.shape,
-                        update=False,
-                        color='MAGENTA',
-                        transparency=0.45
-                    )
-                elif inst.error:
-                    print(f"Spiral right #{inst.index} error: {inst.error}")
 
             self.viewer3d._display.FitAll()
             self.viewer3d._display.Repaint()

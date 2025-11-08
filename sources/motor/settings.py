@@ -1,19 +1,19 @@
 pattern_p = {
     "bbox": {
-        "width": 100.0,
-        "height": 100.0,
+        "width": 5.890,
+        "height": 7.500,
     },
     "pattern": {
         "vbh": 10.0,
-        "vlw_t": 5.0,
-        "vlw_b": 5.0,
-        "ct": 20.0,
-        "cb": 20.0,
-        "epn": 0.80,
-        "epm": 0.80,
+        "ct": 2.94500,
+        "cb": 2.94500,
+        "epn": 1.60,
+        "epm": 0.450,
+        "thickness": 0.047,
+        "width": 0.544,
     },
     "assembly": {
-        "spacing": 0.005,
+        "spacing": 0.05,
         "count": 18,
     },
     "layer": {

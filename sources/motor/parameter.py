@@ -6,16 +6,7 @@ from typing import Dict, Iterable, List, TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - import hints only
     from pattern import Pattern
 
-__all__ = ("Parameter", "AssemblyParameters", "SpiralParameters")
-
-
-@dataclass
-class SpiralParameters:
-    """Spiral placement defaults for 3D mapping."""
-    radius: float = 6.2055
-    thickness: float = 0.1315
-    turns: int = 6
-    samples_per_turn: int = 1500
+__all__ = ("Parameter", "AssemblyParameters")
 
 
 @dataclass
@@ -44,8 +35,6 @@ class Parameter:
         "width": "w",
         "height": "h",
         "vbh": "vb",
-        "vlw_top": "vx_t",
-        "vlw_bottom": "vx_b",
         "corner_bottom": "cb",
         "corner_top": "ct",
         "exponent": "epn",
@@ -54,10 +43,9 @@ class Parameter:
 
     _ASSEMBLY_LABEL_MAP: Dict[str, str] = {"count": "cnt"}
 
-    def __init__(self, pattern: Pattern, assembly: AssemblyParameters, spiral: SpiralParameters):
+    def __init__(self, pattern: Pattern, assembly: AssemblyParameters):
         self._pattern = pattern
         self._assembly = assembly
-        self._spiral = spiral
 
         # Reverse lookups for setters
         self._pattern_reverse = {v: k for k, v in self._PATTERN_LABEL_MAP.items()}
@@ -73,8 +61,6 @@ class Parameter:
         self._pattern.corner_margin = max(0.0, self._assembly.spacing * 2.0)
         enabled_map = {
             "vbh": mode == "A",
-            "vlw_top": mode == "A",
-            "vlw_bottom": mode == "A",
             "corner_bottom": mode == "B",
             "corner_top": mode == "B",
         }
@@ -86,8 +72,6 @@ class Parameter:
             "width": "width",
             "height": "height",
             "vbh": "vbh",
-            "vlw_top": "vlw",
-            "vlw_bottom": "vlw_bottom",
             "corner_bottom": "corner_bottom_value",
             "corner_top": "corner_top_value",
             "exponent": "exponent",
@@ -168,7 +152,3 @@ class Parameter:
     @property
     def assembly(self) -> AssemblyParameters:
         return self._assembly
-
-    @property
-    def spiral(self) -> SpiralParameters:
-        return self._spiral
