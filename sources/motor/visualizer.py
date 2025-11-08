@@ -1,15 +1,17 @@
 import math
 import os
+import numpy as np
 from pattern import Pattern
 from assamble import AssemblyBuilder
 from step import StepExporter
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog)
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog, QProgressDialog)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - ensures 3D projection is registered
 
 # OCCT Display
 from OCC.Display.backend import load_backend
@@ -1300,166 +1302,261 @@ class Visualizer(QWidget):
         self.assembly_canvas.draw()
     
     def _draw_chart(self):
-        """Draw area and resistance vs exponent/vbh chart in independent window"""
-        # Clear the entire figure to remove all axes including twinx axes
+        """Draw charts summarising area/resistance trends."""
         self.chart_figure.clear()
-        self.chart_ax = self.chart_figure.add_subplot(111)
-        
-        # Calculate area, coefficient and resistance
-        x_values = []
-        area_values = []
-        coeff_values = []
-        resistance_values = []
-        
-        # Save current state so we can restore after sampling
+
+        def snapshots_close(ref, current, tol=1e-6):
+            if ref.keys() != current.keys():
+                return False
+            for key in ref:
+                if abs(float(ref[key]) - float(current[key])) > tol:
+                    return False
+            return True
+
         state_snapshot = self.assembly_builder.snapshot_pattern()
+        augmented_snapshot = dict(state_snapshot)
+        augmented_snapshot.update({
+            'spacing': self.assembly_params.spacing,
+            'offset': self.assembly_params.offset,
+            'coil_width': self.assembly_params.coil_width,
+            'layer_thickness': self.assembly_params.layer_thickness,
+        })
+
         is_mode_a = self.assembly_builder.get_pattern_mode() == 'A'
-        
+        mode_key = 'A' if is_mode_a else 'B'
+        cache = getattr(self, 'chart_cache', {}).get(mode_key)
+        need_recompute = not cache or not snapshots_close(cache['snapshot'], augmented_snapshot)
+
         if is_mode_a:
-            # Mode A: vary vbh from 0 to half_height
-            half_height = self.assembly_builder.height / 2.0
-            vbh_start = 0.0
-            vbh_end = half_height
-            vbh_step = half_height / 100.0  # 100 steps
-            
-            original_value = state_snapshot['vbh']
-            current_vbh = vbh_start
-            try:
-                while current_vbh <= vbh_end + 1e-9:
-                    # Restore original geometry before applying a new vbh
+            if need_recompute:
+                x_values = []
+                area_values = []
+                coeff_values = []
+                resistance_values = []
+
+                half_height = self.assembly_builder.height / 2.0
+                vbh_start = 0.0
+                vbh_end = half_height
+                vbh_step = half_height / 100.0
+                original_value = state_snapshot['vbh']
+
+                current_vbh = vbh_start
+                try:
+                    while current_vbh <= vbh_end + 1e-9:
+                        self.assembly_builder.restore_pattern(state_snapshot)
+                        self.assembly_builder.set_pattern_variable('vbh', current_vbh)
+
+                        area = self.assembly_builder.get_shape_area(
+                            offset=self.assembly_params.offset,
+                            space=self.assembly_params.spacing
+                        )
+                        coeff = self.assembly_builder.get_equivalent_coefficient(
+                            offset=self.assembly_params.offset,
+                            space=self.assembly_params.spacing
+                        )
+                        resistance = self.assembly_builder.get_resistance(
+                            offset=self.assembly_params.offset,
+                            space=self.assembly_params.spacing
+                        )
+
+                        x_values.append(current_vbh)
+                        area_values.append(area)
+                        coeff_values.append(coeff)
+                        resistance_values.append(resistance)
+
+                        current_vbh += vbh_step
+                finally:
                     self.assembly_builder.restore_pattern(state_snapshot)
-                    self.assembly_builder.set_pattern_variable('vbh', current_vbh)
 
-                    area = self.assembly_builder.get_shape_area(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
-                    coeff = self.assembly_builder.get_equivalent_coefficient(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
-                    resistance = self.assembly_builder.get_resistance(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
+                self.chart_cache['A'] = {
+                    'snapshot': dict(augmented_snapshot),
+                    'x_values': x_values,
+                    'area_values': area_values,
+                    'coeff_values': coeff_values,
+                    'resistance_values': resistance_values,
+                }
+            else:
+                data = cache
+                x_values = data['x_values']
+                area_values = data['area_values']
+                coeff_values = data['coeff_values']
+                resistance_values = data['resistance_values']
+                original_value = state_snapshot['vbh']
 
-                    x_values.append(current_vbh)
-                    area_values.append(area)
-                    coeff_values.append(coeff)
-                    resistance_values.append(resistance)
+            self.chart_ax = self.chart_figure.add_subplot(111)
 
-                    current_vbh += vbh_step
-            finally:
-                self.assembly_builder.restore_pattern(state_snapshot)
         else:
-            # Mode B: vary exponent from 1.2 to 2.0
-            exponent_start = 1.2
-            exponent_end = 2.0
-            exponent_step = 0.01
-            
-            original_value = state_snapshot['exponent']
-            current_exp = exponent_start
-            try:
-                while current_exp <= exponent_end:
-                    # Restore original geometry before applying a new exponent
+            if need_recompute:
+                epn_values = np.linspace(1.2, 2.0, 25)
+                epm_values = np.linspace(0.1, 2.0, 25)
+                area_grid = np.zeros((len(epn_values), len(epm_values)))
+                resistance_grid = np.zeros_like(area_grid)
+
+                total_samples = len(epn_values) * len(epm_values)
+                progress = QProgressDialog('Evaluating mode B grid...', 'Cancel', 0, total_samples, self)
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setValue(0)
+                cancelled = False
+                sample_index = 0
+
+                try:
+                    for i, epn in enumerate(epn_values):
+                        for j, epm in enumerate(epm_values):
+                            if progress.wasCanceled():
+                                cancelled = True
+                                break
+
+                            self.assembly_builder.restore_pattern(state_snapshot)
+                            self.assembly_builder.set_pattern_variable('exponent', epn)
+                            self.assembly_builder.set_pattern_variable('exponent_m', epm)
+
+                            area = self.assembly_builder.get_symmetric_curve_area()
+                            resistance = self.assembly_builder.get_resistance(
+                                offset=self.assembly_params.offset,
+                                space=self.assembly_params.spacing
+                            )
+
+                            area_grid[i, j] = area
+                            resistance_grid[i, j] = resistance * 1000.0
+
+                            sample_index += 1
+                            if sample_index % 5 == 0 or sample_index == total_samples:
+                                progress.setValue(sample_index)
+                        if cancelled:
+                            break
+                finally:
                     self.assembly_builder.restore_pattern(state_snapshot)
-                    self.assembly_builder.set_pattern_variable('exponent', current_exp)
+                    progress.close()
 
-                    area = self.assembly_builder.get_shape_area(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
-                    coeff = self.assembly_builder.get_equivalent_coefficient(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
-                    resistance = self.assembly_builder.get_resistance(
-                        offset=self.assembly_params.offset,
-                        space=self.assembly_params.spacing
-                    )
+                if cancelled:
+                    self.chart_ax = self.chart_figure.add_subplot(111)
+                    self.chart_ax.text(0.5, 0.5, 'Cancelled sampling', ha='center', va='center')
+                    self.chart_canvas.draw()
+                    return
 
-                    x_values.append(current_exp)
-                    area_values.append(area)
-                    coeff_values.append(coeff)
-                    resistance_values.append(resistance)
+                max_res = np.max(resistance_grid)
+                max_area = np.max(area_grid)
+                scale = 1.0
+                if max_res > 1e-9 and max_area > 1e-9:
+                    scale = max_area / max_res
 
-                    current_exp += exponent_step
-            finally:
-                self.assembly_builder.restore_pattern(state_snapshot)
-        
-        # Calculate current values for display
+                self.chart_cache['B'] = {
+                    'snapshot': dict(augmented_snapshot),
+                    'epn_values': epn_values,
+                    'epm_values': epm_values,
+                    'area_grid': area_grid,
+                    'resistance_grid': resistance_grid,
+                    'scale': scale,
+                }
+            else:
+                data = cache
+                epn_values = data['epn_values']
+                epm_values = data['epm_values']
+                area_grid = data['area_grid']
+                resistance_grid = data['resistance_grid']
+                scale = data['scale']
+
+            epn_mesh, epm_mesh = np.meshgrid(epn_values, epm_values, indexing='ij')
+            self.chart_ax = self.chart_figure.add_subplot(111, projection='3d')
+
+            area_surface = self.chart_ax.plot_surface(
+                epn_mesh,
+                epm_mesh,
+                area_grid,
+                cmap='Blues',
+                linewidth=0,
+                antialiased=True,
+                alpha=0.7,
+            )
+
+            resistance_surface = self.chart_ax.plot_surface(
+                epn_mesh,
+                epm_mesh,
+                resistance_grid * scale,
+                cmap='Oranges',
+                linewidth=0,
+                antialiased=True,
+                alpha=0.45,
+            )
+
+            current_epn = state_snapshot['exponent']
+            current_epm = state_snapshot.get('exponent_m', 0.0)
+            symmetric_area = self.assembly_builder.get_symmetric_curve_area()
+            current_resistance = self.assembly_builder.get_resistance(
+                offset=self.assembly_params.offset,
+                space=self.assembly_params.spacing
+            ) * 1000.0
+
+            self.chart_ax.scatter(current_epn, current_epm, symmetric_area, color='navy', s=35, depthshade=True, label='Current Area')
+            self.chart_ax.scatter(current_epn, current_epm, current_resistance * scale, color='darkorange', s=35, depthshade=True, label='Current Resistance (scaled)')
+
+            self.chart_ax.set_xlabel('epn', fontsize=10)
+            self.chart_ax.set_ylabel('epm', fontsize=10)
+            self.chart_ax.set_zlabel('Area / Resistance*scale', fontsize=10)
+            self.chart_ax.view_init(elev=28, azim=45)
+            self.chart_ax.grid(False)
+            self.chart_ax.legend(loc='upper right', fontsize=8)
+
+            self.chart_figure.colorbar(area_surface, ax=self.chart_ax, shrink=0.5, pad=0.1, label='Area (mm²)')
+            self.chart_figure.colorbar(resistance_surface, ax=self.chart_ax, shrink=0.5, pad=0.07, label='Resistance (mΩ * scale)')
+
         current_area = self.assembly_builder.get_shape_area(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         s1 = current_area
         s2 = self.assembly_builder.get_rectangle_area(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         current_coeff = self.assembly_builder.get_equivalent_coefficient(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         current_resistance = self.assembly_builder.get_resistance(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         symmetric_area = self.assembly_builder.get_symmetric_curve_area()
-        
-        # Calculate area improvement rate
+
         if is_mode_a:
-            # Mode A: compare min vbh (0) vs max vbh (half_height)
-            area_baseline = area_values[0] if area_values else None  # vbh = 0
-            area_optimized = area_values[-1] if area_values else None  # vbh = max
+            area_baseline = area_values[0] if area_values else None
+            area_optimized = area_values[-1] if area_values else None
         else:
-            # Mode B: compare exponent 2.0 vs 1.2
-            area_baseline = None  # exponent = 2.0
-            area_optimized = None  # exponent = 1.2
-            for i, exp in enumerate(x_values):
-                if abs(exp - 2.0) < 0.005:  # Find closest to 2.0
-                    area_baseline = area_values[i]
-                if abs(exp - 1.2) < 0.005:  # Find closest to 1.2
-                    area_optimized = area_values[i]
-        
-        # Calculate improvement rate
-        if area_baseline and area_optimized:
+            area_baseline = None
+            area_optimized = None
+            if cache or not need_recompute:
+                epn_values_cached = self.chart_cache['B']['epn_values']
+                area_grid_cached = self.chart_cache['B']['area_grid']
+                idx_baseline = int(np.argmin(np.abs(epn_values_cached - 2.0)))
+                idx_opt = int(np.argmin(np.abs(epn_values_cached - 1.2)))
+                area_baseline = float(np.max(area_grid_cached[idx_baseline]))
+                area_optimized = float(np.max(area_grid_cached[idx_opt]))
+
+        if area_baseline is not None and area_optimized is not None and abs(area_baseline) > 1e-9:
             improvement_rate = (area_optimized - area_baseline) / area_baseline * 100
             info_text = f'S1:{s1:.3f} S2:{s2:.3f} K:{current_coeff:.3f} ΔS:{improvement_rate:+.1f}%\nR:{current_resistance*1000:.3f}mΩ | Slot:{symmetric_area:.3f}mm²'
         else:
             info_text = f'S1:{s1:.3f} S2:{s2:.3f} K:{current_coeff:.3f}\nR:{current_resistance*1000:.3f}mΩ | Slot:{symmetric_area:.3f}mm²'
-        
+
+        if not is_mode_a:
+            scale = self.chart_cache['B']['scale']
+            info_text += f"\nResistance surface scaled by ×{scale:.2f} (mΩ)"
+
         self.chart_ax.set_title(info_text, fontsize=10, pad=8)
-        
-        # Plot area curve (left y-axis, blue)
-        color_area = 'tab:blue'
-        xlabel = 'vbh (mm)' if is_mode_a else 'Exponent'
-        self.chart_ax.set_xlabel(xlabel, fontsize=10)
-        self.chart_ax.set_ylabel('Area (mm²)', fontsize=10, color=color_area)
-        self.chart_ax.plot(x_values, area_values, color=color_area, linewidth=2.0, label='Area')
-        self.chart_ax.tick_params(axis='y', labelcolor=color_area, labelsize=9)
-        
-        # Mark current position for area
-        self.chart_ax.plot([original_value], [current_area], 'o', color=color_area, markersize=6)
-        
-        # Create second y-axis for resistance (right y-axis, red)
-        if resistance_values:
-            resistance_mohm = [r * 1000 for r in resistance_values]
-            color_resistance = 'tab:red'
-            
-            chart_ax2 = self.chart_ax.twinx()
-            chart_ax2.set_ylabel('Resistance (mΩ)', fontsize=10, color=color_resistance)
-            chart_ax2.plot(x_values, resistance_mohm, color=color_resistance, linewidth=2.0,
-                          linestyle='--', label='Resistance')
-            chart_ax2.tick_params(axis='y', labelcolor=color_resistance, labelsize=9)
-            
-            # Mark current position for resistance
-            chart_ax2.plot([original_value], [current_resistance * 1000], 'o', 
-                          color=color_resistance, markersize=6)
-        
-        # Add grid and styling
-        self.chart_ax.grid(True, alpha=0.3, linewidth=0.5)
-        self.chart_ax.tick_params(axis='x', labelsize=9)
-        
-        # Set x-axis limits to match the data range
+
         if is_mode_a:
+            color_area = 'tab:blue'
+            self.chart_ax.set_xlabel('vbh (mm)', fontsize=10)
+            self.chart_ax.set_ylabel('Area (mm²)', fontsize=10, color=color_area)
+            self.chart_ax.plot(x_values, area_values, color=color_area, linewidth=2.0, label='Area')
+            self.chart_ax.tick_params(axis='y', labelcolor=color_area, labelsize=9)
+            self.chart_ax.plot([original_value], [current_area], 'o', color=color_area, markersize=6)
+
+            if resistance_values:
+                resistance_mohm = [r * 1000 for r in resistance_values]
+                color_resistance = 'tab:red'
+                chart_ax2 = self.chart_ax.twinx()
+                chart_ax2.set_ylabel('Resistance (mΩ)', fontsize=10, color=color_resistance)
+                chart_ax2.plot(x_values, resistance_mohm, color=color_resistance, linewidth=2.0, linestyle='--', label='Resistance')
+                chart_ax2.tick_params(axis='y', labelcolor=color_resistance, labelsize=9)
+                chart_ax2.plot([original_value], [current_resistance * 1000], 'o', color=color_resistance, markersize=6)
+
+            self.chart_ax.grid(True, alpha=0.3, linewidth=0.5)
+            self.chart_ax.tick_params(axis='x', labelsize=9)
             half_height = self.assembly_builder.height / 2.0
             self.chart_ax.set_xlim(-0.05 * half_height, 1.05 * half_height)
-        else:
-            self.chart_ax.set_xlim(1.15, 2.05)
-        
-        # Refresh canvas
+
         self.chart_figure.tight_layout(pad=1.0)
         self.chart_canvas.draw()
-    
     def show(self, box=None, pattern=None):
         """Display the GUI and start the Qt application"""
         super().show()
