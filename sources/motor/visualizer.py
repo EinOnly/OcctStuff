@@ -1,11 +1,13 @@
 import math
 import os
+from typing import Optional
+
 import numpy as np
 from pattern import Pattern
 from assamble import AssemblyBuilder
 from step import StepExporter
 from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QInputDialog, QProgressDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -275,6 +277,8 @@ class Visualizer(QWidget):
         self.chart_ax = self.chart_figure.add_subplot(111)
         self.chart_canvas.setMinimumSize(chart_width, height)
         self.chart_canvas.setMaximumSize(chart_width, height)
+        self.chart_canvas.setFocusPolicy(Qt.ClickFocus)
+        self._chart_default_view = (28, 45)
 
         self.windowChart = QWidget()
         self.windowChart.setMinimumSize(chart_width, height)
@@ -317,6 +321,9 @@ class Visualizer(QWidget):
         
         # Cache for chart data
         self.chart_needs_update = True
+        self.chart_cache = {'A': None, 'B': None}
+        self.chart_canvas.installEventFilter(self)
+        self._chart_info_artist = None
         
         # Create slider panel for windowInput
         self.input_layout = QVBoxLayout()
@@ -360,6 +367,7 @@ class Visualizer(QWidget):
         """Handle keyboard shortcuts for 3D view control"""
         key = event.key()
         viewer_focus = self.viewer3d.hasFocus()
+        chart_focus = self.chart_canvas.hasFocus()
         
         # View switching: 1=Top, 2=Front, 3=Side
         if key == Qt.Key_1:
@@ -367,23 +375,40 @@ class Visualizer(QWidget):
                 # Top view (looking down Z axis)
                 self.viewer3d._display.View_Top()
                 print("View: Top (Z-axis)")
+            elif chart_focus:
+                self._set_chart_view(90.0, -90.0)
+                print("Chart view: Top")
             else:
                 self._reset_assembly_view()
                 self._draw_assembly()
                 print("Assembly view: Centered")
         elif key == Qt.Key_2:
-            # Front view (looking along Y axis)
-            self.viewer3d._display.View_Front()
-            print("View: Front (Y-axis)")
+            if viewer_focus:
+                self.viewer3d._display.View_Front()
+                print("View: Front (Y-axis)")
+            elif chart_focus and self._chart_is_3d():
+                self._set_chart_view(0.0, -90.0)
+                print("Chart view: Front")
         elif key == Qt.Key_3:
-            # Side view (looking along X axis)
-            self.viewer3d._display.View_Right()
-            print("View: Side (X-axis)")
-        
+            if viewer_focus:
+                self.viewer3d._display.View_Right()
+                print("View: Side (X-axis)")
+            elif chart_focus and self._chart_is_3d():
+                self._set_chart_view(0.0, 0.0)
+                print("Chart view: Side")
+
         elif key == Qt.Key_0:
-            self._reset_assembly_view()
-            self._draw_assembly()
-            print("Assembly view: Reset zoom")
+            if viewer_focus:
+                self.viewer3d._display.View_Iso()
+                print("View: Reset (3D Iso)")
+            elif chart_focus and self._chart_is_3d():
+                default_elev, default_azim = getattr(self, '_chart_default_view', (28, 45))
+                self._set_chart_view(default_elev, default_azim)
+                print("Chart view: Reset")
+            else:
+                self._reset_assembly_view()
+                self._draw_assembly()
+                print("Assembly view: Reset zoom")
         
         # Pan controls with arrow keys
         elif key == Qt.Key_Left:
@@ -427,17 +452,38 @@ class Visualizer(QWidget):
         
         # R = Reset view (fit all)
         elif key == Qt.Key_R:
-            self.viewer3d._display.FitAll()
-            print("View: Reset (Fit All)")
-        
+            if viewer_focus:
+                self.viewer3d._display.FitAll()
+                print("View: Reset (Fit All)")
+            elif chart_focus and self._chart_is_3d():
+                default_elev, default_azim = getattr(self, '_chart_default_view', (28, 45))
+                self._set_chart_view(default_elev, default_azim)
+                print("Chart view: Reset")
+            else:
+                super().keyPressEvent(event)
+            return
+
         # I = Isometric view
         elif key == Qt.Key_I:
-            self.viewer3d._display.View_Iso()
-            print("View: Isometric")
-        
+            if viewer_focus:
+                self.viewer3d._display.View_Iso()
+                print("View: Isometric")
+            elif chart_focus and self._chart_is_3d():
+                self._set_chart_view(28.0, 45.0)
+                print("Chart view: Isometric")
+            else:
+                super().keyPressEvent(event)
+            return
+
         else:
             # Pass other keys to parent
             super().keyPressEvent(event)
+
+    def eventFilter(self, obj, event):
+        if obj is self.chart_canvas and event.type() == QEvent.KeyPress:
+            self.keyPressEvent(event)
+            return True
+        return super().eventFilter(obj, event)
     
     def _build_input_panel(self):
         """Build input boxes for width, height, thick, and spacing parameters."""
@@ -672,6 +718,7 @@ class Visualizer(QWidget):
             if new_width > 0:
                 # Reset pattern with new dimensions
                 self.assembly_builder.set_dimensions(width=new_width)
+                self._invalidate_chart_cache()
                 self._reset_assembly_view()
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
@@ -686,6 +733,7 @@ class Visualizer(QWidget):
             if new_height > 0:
                 # Reset pattern with new dimensions
                 self.assembly_builder.set_dimensions(height=new_height)
+                self._invalidate_chart_cache()
                 self._reset_assembly_view()
                 # Mark chart for update but don't calculate yet
                 self.chart_needs_update = True
@@ -701,6 +749,7 @@ class Visualizer(QWidget):
                 self.thick = new_thick
                 self.assembly_params.coil_width = self.thick
                 self.assembly_params.update_offset_from_coil()
+                self._invalidate_chart_cache()
                 self._reset_assembly_view()
                 # Don't trigger chart update - wait for calculate button
                 self._update_views_without_chart()
@@ -716,6 +765,7 @@ class Visualizer(QWidget):
                 self.assembly_params.update_offset_from_coil()
                 self.parameters.pattern.corner_margin = max(0.0, self.assembly_params.spacing * 2.0)
                 self.spacing_input.setText(f"{self.assembly_params.spacing:.5f}")
+                self._invalidate_chart_cache()
                 self._reset_assembly_view()
                 self._update_views_without_chart()
                 self._update_slider_ranges()
@@ -731,6 +781,7 @@ class Visualizer(QWidget):
     def _on_twist_clicked(self):
         """Toggle twist mode - flips bottom half of shape horizontally at pattern height center."""
         self.assembly_params.twist_enabled = self.twist_button.isChecked()
+        self._invalidate_chart_cache()
         
         # Update all views
         self._update_views_without_chart()
@@ -740,6 +791,7 @@ class Visualizer(QWidget):
         current = self.assembly_builder.get_pattern_mode()
         new_mode = 'B' if current == 'A' else 'A'
         self.assembly_builder.set_pattern_mode(new_mode)
+        self._invalidate_chart_cache()
         self._update_mode_button()
         self._build_slider_panel()
         self._update_slider_ranges()
@@ -951,6 +1003,14 @@ class Visualizer(QWidget):
         previous_mode = self.assembly_builder.get_pattern_mode()
 
         self.assembly_builder.set_pattern_variable(label, value)
+
+        if label in {'cb', 'ct'}:
+            self._invalidate_chart_cache(mode='B')
+        elif label in {'vb', 'vx_t', 'vx_b'}:
+            self._invalidate_chart_cache(mode='A')
+        elif label not in {'epn', 'epm'}:
+            self._invalidate_chart_cache()
+
         current_mode = self.assembly_builder.get_pattern_mode()
         
         if previous_mode != current_mode:
@@ -1022,6 +1082,27 @@ class Visualizer(QWidget):
     def _reset_assembly_view(self):
         """Clear stored assembly view limits so the next draw uses defaults."""
         self.assembly_view_limits = None
+
+    def _invalidate_chart_cache(self, mode: Optional[str] = None):
+        """Invalidate cached chart data."""
+        if not hasattr(self, 'chart_cache') or not isinstance(self.chart_cache, dict):
+            self.chart_cache = {'A': None, 'B': None}
+            return
+        if mode is None:
+            self.chart_cache = {'A': None, 'B': None}
+        else:
+            self.chart_cache[mode] = None
+
+    def _chart_is_3d(self) -> bool:
+        return hasattr(self, 'chart_ax') and getattr(self.chart_ax, 'name', '').lower() == '3d'
+
+    def _set_chart_view(self, elev: float, azim: float):
+        if not self._chart_is_3d():
+            return
+        if hasattr(self.chart_ax, 'set_proj_type'):
+            self.chart_ax.set_proj_type('ortho')
+        self.chart_ax.view_init(elev=elev, azim=azim)
+        self.chart_canvas.draw_idle()
 
     def _pan_assembly(self, dx_fraction: float, dy_fraction: float):
         """Pan the assembly view by a fraction of the current window."""
@@ -1309,25 +1390,50 @@ class Visualizer(QWidget):
             if ref.keys() != current.keys():
                 return False
             for key in ref:
-                if abs(float(ref[key]) - float(current[key])) > tol:
-                    return False
+                try:
+                    if abs(float(ref[key]) - float(current[key])) > tol:
+                        return False
+                except (TypeError, ValueError):
+                    if ref[key] != current[key]:
+                        return False
             return True
 
         state_snapshot = self.assembly_builder.snapshot_pattern()
-        augmented_snapshot = dict(state_snapshot)
-        augmented_snapshot.update({
+        base_snapshot = {
             'spacing': self.assembly_params.spacing,
             'offset': self.assembly_params.offset,
             'coil_width': self.assembly_params.coil_width,
             'layer_thickness': self.assembly_params.layer_thickness,
-        })
+            'width': self.assembly_builder.width,
+            'height': self.assembly_builder.height,
+        }
 
         is_mode_a = self.assembly_builder.get_pattern_mode() == 'A'
         mode_key = 'A' if is_mode_a else 'B'
+        if is_mode_a:
+            cache_snapshot = dict(base_snapshot)
+            cache_snapshot.update({
+                'mode': 'A',
+                'vbh': state_snapshot.get('vbh', 0.0),
+                'vlw': state_snapshot.get('vlw', 0.0),
+                'vlw_bottom': state_snapshot.get('vlw_bottom', 0.0),
+                'exponent': state_snapshot.get('exponent', 0.0),
+                'exponent_m': state_snapshot.get('exponent_m', 0.0),
+            })
+        else:
+            pattern = self.assembly_builder.pattern
+            cache_snapshot = dict(base_snapshot)
+            cache_snapshot.update({
+                'mode': 'B',
+                'corner_bottom_value': pattern.corner_bottom_value,
+                'corner_top_value': pattern.corner_top_value,
+            })
+
         cache = getattr(self, 'chart_cache', {}).get(mode_key)
-        need_recompute = not cache or not snapshots_close(cache['snapshot'], augmented_snapshot)
+        need_recompute = not cache or not snapshots_close(cache['snapshot'], cache_snapshot)
 
         if is_mode_a:
+            original_value = state_snapshot['vbh']
             if need_recompute:
                 x_values = []
                 area_values = []
@@ -1369,26 +1475,25 @@ class Visualizer(QWidget):
                     self.assembly_builder.restore_pattern(state_snapshot)
 
                 self.chart_cache['A'] = {
-                    'snapshot': dict(augmented_snapshot),
+                    'snapshot': dict(cache_snapshot),
                     'x_values': x_values,
                     'area_values': area_values,
                     'coeff_values': coeff_values,
                     'resistance_values': resistance_values,
                 }
+                data = self.chart_cache['A']
             else:
                 data = cache
                 x_values = data['x_values']
                 area_values = data['area_values']
                 coeff_values = data['coeff_values']
                 resistance_values = data['resistance_values']
-                original_value = state_snapshot['vbh']
-
             self.chart_ax = self.chart_figure.add_subplot(111)
 
         else:
             if need_recompute:
-                epn_values = np.linspace(1.2, 2.0, 25)
-                epm_values = np.linspace(0.1, 2.0, 25)
+                epn_values = cache['epn_values'] if cache else np.linspace(1.2, 2.0, 25)
+                epm_values = cache['epm_values'] if cache else np.linspace(0.1, 2.0, 25)
                 area_grid = np.zeros((len(epn_values), len(epm_values)))
                 resistance_grid = np.zeros_like(area_grid)
 
@@ -1441,13 +1546,14 @@ class Visualizer(QWidget):
                     scale = max_area / max_res
 
                 self.chart_cache['B'] = {
-                    'snapshot': dict(augmented_snapshot),
+                    'snapshot': dict(cache_snapshot),
                     'epn_values': epn_values,
                     'epm_values': epm_values,
                     'area_grid': area_grid,
                     'resistance_grid': resistance_grid,
                     'scale': scale,
                 }
+                data = self.chart_cache['B']
             else:
                 data = cache
                 epn_values = data['epn_values']
@@ -1458,6 +1564,8 @@ class Visualizer(QWidget):
 
             epn_mesh, epm_mesh = np.meshgrid(epn_values, epm_values, indexing='ij')
             self.chart_ax = self.chart_figure.add_subplot(111, projection='3d')
+            if hasattr(self.chart_ax, 'set_proj_type'):
+                self.chart_ax.set_proj_type('ortho')
 
             area_surface = self.chart_ax.plot_surface(
                 epn_mesh,
@@ -1490,15 +1598,14 @@ class Visualizer(QWidget):
             self.chart_ax.scatter(current_epn, current_epm, symmetric_area, color='navy', s=35, depthshade=True, label='Current Area')
             self.chart_ax.scatter(current_epn, current_epm, current_resistance * scale, color='darkorange', s=35, depthshade=True, label='Current Resistance (scaled)')
 
-            self.chart_ax.set_xlabel('epn', fontsize=10)
-            self.chart_ax.set_ylabel('epm', fontsize=10)
-            self.chart_ax.set_zlabel('Area / Resistance*scale', fontsize=10)
+            self.chart_ax.set_xlabel('epn', fontsize=8)
+            self.chart_ax.set_ylabel('epm', fontsize=8)
+            self.chart_ax.set_zlabel('Area / Resistance*scale', fontsize=8)
             self.chart_ax.view_init(elev=28, azim=45)
+            self._chart_default_view = (28, 45)
             self.chart_ax.grid(False)
-            self.chart_ax.legend(loc='upper right', fontsize=8)
-
-            self.chart_figure.colorbar(area_surface, ax=self.chart_ax, shrink=0.5, pad=0.1, label='Area (mm²)')
-            self.chart_figure.colorbar(resistance_surface, ax=self.chart_ax, shrink=0.5, pad=0.07, label='Resistance (mΩ * scale)')
+            self.chart_ax.tick_params(axis='both', labelsize=6)
+            self.chart_ax.zaxis.set_tick_params(labelsize=6)
 
         current_area = self.assembly_builder.get_shape_area(offset=self.assembly_params.offset, space=self.assembly_params.spacing)
         s1 = current_area
@@ -1513,9 +1620,9 @@ class Visualizer(QWidget):
         else:
             area_baseline = None
             area_optimized = None
-            if cache or not need_recompute:
-                epn_values_cached = self.chart_cache['B']['epn_values']
-                area_grid_cached = self.chart_cache['B']['area_grid']
+            if data:
+                epn_values_cached = data['epn_values']
+                area_grid_cached = data['area_grid']
                 idx_baseline = int(np.argmin(np.abs(epn_values_cached - 2.0)))
                 idx_opt = int(np.argmin(np.abs(epn_values_cached - 1.2)))
                 area_baseline = float(np.max(area_grid_cached[idx_baseline]))
@@ -1523,39 +1630,75 @@ class Visualizer(QWidget):
 
         if area_baseline is not None and area_optimized is not None and abs(area_baseline) > 1e-9:
             improvement_rate = (area_optimized - area_baseline) / area_baseline * 100
-            info_text = f'S1:{s1:.3f} S2:{s2:.3f} K:{current_coeff:.3f} ΔS:{improvement_rate:+.1f}%\nR:{current_resistance*1000:.3f}mΩ | Slot:{symmetric_area:.3f}mm²'
+            info_text = (
+                f'S1:{s1:.3f}  S2:{s2:.3f}  K:{current_coeff:.3f}  '
+                f'ΔS:{improvement_rate:+.1f}%\n'
+                f'R:{current_resistance*1000:.3f}mΩ  Slot:{symmetric_area:.3f}mm²'
+            )
         else:
-            info_text = f'S1:{s1:.3f} S2:{s2:.3f} K:{current_coeff:.3f}\nR:{current_resistance*1000:.3f}mΩ | Slot:{symmetric_area:.3f}mm²'
+            info_text = (
+                f'S1:{s1:.3f}  S2:{s2:.3f}  K:{current_coeff:.3f}\n'
+                f'R:{current_resistance*1000:.3f}mΩ  Slot:{symmetric_area:.3f}mm²'
+            )
 
-        if not is_mode_a:
-            scale = self.chart_cache['B']['scale']
-            info_text += f"\nResistance surface scaled by ×{scale:.2f} (mΩ)"
+        if not is_mode_a and data:
+            scale_val = data['scale']
+            info_text += f"\nResistance surface scaled by ×{scale_val:.2f} (mΩ)"
 
-        self.chart_ax.set_title(info_text, fontsize=10, pad=8)
+        if self._chart_info_artist is not None:
+            try:
+                self._chart_info_artist.remove()
+            except ValueError:
+                pass
+            self._chart_info_artist = None
+
+        if is_mode_a:
+            self._chart_info_artist = self.chart_ax.text(
+                0.02,
+                0.98,
+                info_text,
+                transform=self.chart_ax.transAxes,
+                fontsize=7,
+                va='top',
+                ha='left',
+                linespacing=1.2,
+                bbox=dict(facecolor='white', alpha=0.55, edgecolor='none', pad=0.3),
+            )
+        else:
+            self._chart_info_artist = self.chart_figure.text(
+                0.02,
+                0.98,
+                info_text,
+                fontsize=7,
+                va='top',
+                ha='left',
+                linespacing=1.2,
+                bbox=dict(facecolor='white', alpha=0.55, edgecolor='none', pad=0.3),
+            )
 
         if is_mode_a:
             color_area = 'tab:blue'
-            self.chart_ax.set_xlabel('vbh (mm)', fontsize=10)
-            self.chart_ax.set_ylabel('Area (mm²)', fontsize=10, color=color_area)
+            self.chart_ax.set_xlabel('vbh (mm)', fontsize=8)
+            self.chart_ax.set_ylabel('Area (mm²)', fontsize=8, color=color_area)
             self.chart_ax.plot(x_values, area_values, color=color_area, linewidth=2.0, label='Area')
-            self.chart_ax.tick_params(axis='y', labelcolor=color_area, labelsize=9)
+            self.chart_ax.tick_params(axis='y', labelcolor=color_area, labelsize=7)
             self.chart_ax.plot([original_value], [current_area], 'o', color=color_area, markersize=6)
 
             if resistance_values:
                 resistance_mohm = [r * 1000 for r in resistance_values]
                 color_resistance = 'tab:red'
                 chart_ax2 = self.chart_ax.twinx()
-                chart_ax2.set_ylabel('Resistance (mΩ)', fontsize=10, color=color_resistance)
+                chart_ax2.set_ylabel('Resistance (mΩ)', fontsize=8, color=color_resistance)
                 chart_ax2.plot(x_values, resistance_mohm, color=color_resistance, linewidth=2.0, linestyle='--', label='Resistance')
-                chart_ax2.tick_params(axis='y', labelcolor=color_resistance, labelsize=9)
+                chart_ax2.tick_params(axis='y', labelcolor=color_resistance, labelsize=7)
                 chart_ax2.plot([original_value], [current_resistance * 1000], 'o', color=color_resistance, markersize=6)
 
             self.chart_ax.grid(True, alpha=0.3, linewidth=0.5)
-            self.chart_ax.tick_params(axis='x', labelsize=9)
+            self.chart_ax.tick_params(axis='x', labelsize=7)
             half_height = self.assembly_builder.height / 2.0
             self.chart_ax.set_xlim(-0.05 * half_height, 1.05 * half_height)
 
-        self.chart_figure.tight_layout(pad=1.0)
+        self.chart_figure.tight_layout(pad=0.2)
         self.chart_canvas.draw()
     def show(self, box=None, pattern=None):
         """Display the GUI and start the Qt application"""

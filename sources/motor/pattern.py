@@ -721,6 +721,7 @@ class Pattern:
             area += x1 * y2 - x2 * y1
 
         return abs(area) / 2.0
+    
     def GetResistance(self, offset: float, space: float, thick: float = 0.047, rho: float = 1.724e-8) -> float:
         """
         Calculate electrical resistance for flat conductor in motor slot.
