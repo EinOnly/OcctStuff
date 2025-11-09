@@ -1,13 +1,14 @@
 import math
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from pattern import Pattern
 from assamble import AssemblyBuilder
+from parameter import AssemblyParameters
 from step import StepExporter
-from settings import pattern_p
-from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QProgressDialog)
+from settings import pattern_p, layer_p
+from PyQt5.QtWidgets import (QWidget, QLabel, QSlider, QLineEdit, QHBoxLayout, QVBoxLayout, QGridLayout, QApplication, QPushButton, QFileDialog, QProgressDialog, QButtonGroup, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QEvent
 from PyQt5.QtGui import QDoubleValidator
 import matplotlib
@@ -20,6 +21,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - ensures 3D projection is
 from OCC.Display.backend import load_backend
 load_backend('pyqt5')
 from OCC.Display.qtDisplay import qtViewer3d
+from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 
 class Slider(QWidget):
     """A slider widget with label, slider, and input box for low-latency async updates"""
@@ -220,54 +222,14 @@ class Visualizer(QWidget):
         self.slider_map = {}
         self.mode_button = None
         self.assembly_view_limits = None
-        
         cfg = pattern_p or {}
-        bbox_cfg = cfg.get("bbox", {})
-        pattern_cfg = cfg.get("pattern", {})
-        assembly_cfg = cfg.get("assembly", {})
-
-        extrude_thickness = pattern_cfg.get("thickness", 0.047)
-        coil_width_default = pattern_cfg.get("width", 0.544)
-        bbox_width = bbox_cfg.get("width", 5.89)
-        bbox_height = bbox_cfg.get("height", 7.5)
-
-        # OCCT Step exporter
-        self.step_exporter = StepExporter(thickness=extrude_thickness)
-        self.pattern = Pattern(width=bbox_width, height=bbox_height)
-        self.assembly_builder = AssemblyBuilder(
-            pattern=self.pattern,
-            step_exporter=self.step_exporter,
-        )
-        self.parameters = self.assembly_builder.parameters
-        self.assembly_params = self.assembly_builder.assembly
-        self.coil_width = coil_width_default
-        self.assembly_params.coil_width = self.coil_width
-        self.assembly_params.layer_thickness = extrude_thickness
-        self.assembly_params.spacing = assembly_cfg.get("spacing", self.assembly_params.spacing)
-        self.assembly_params.update_offset_from_coil()
-        self.assembly_params.count = assembly_cfg.get("count", self.assembly_params.count)
-
-        # Determine initial mode from settings
-        has_ct_cb = pattern_cfg.get('ct') is not None or pattern_cfg.get('cb') is not None
-        has_epn_epm = pattern_cfg.get('epn') is not None or pattern_cfg.get('epm') is not None
-        
-        # Set mode before applying parameters
-        if has_ct_cb and not has_epn_epm:
-            self.assembly_builder.set_pattern_mode('A')
-        elif has_epn_epm and not has_ct_cb:
-            self.assembly_builder.set_pattern_mode('B')
-        
-        # Apply pattern parameters from settings
-        pattern_defaults = {
-            'vb': pattern_cfg.get('vbh'),
-            'ct': pattern_cfg.get('ct'),
-            'cb': pattern_cfg.get('cb'),
-            'epn': pattern_cfg.get('epn'),
-            'epm': pattern_cfg.get('epm'),
-        }
-        for label, value in pattern_defaults.items():
-            if value is not None:
-                self.assembly_builder.set_pattern_variable(label, value)
+        self.layer_specs = self._build_layer_specs(layer_p, cfg)
+        self.layer_sessions = self._create_layer_sessions(self.layer_specs)
+        self.active_layer_index = 0
+        self.layer_button_container = None
+        self.layer_button_group = None
+        self._activate_layer_session(0, initial=True)
+        self.highlighted_layer_index = 0 if self.layer_sessions else None
         
         self._invalidate_chart_cache()
         self.chart_needs_update = True
@@ -339,12 +301,15 @@ class Visualizer(QWidget):
         self.assembly_figure = Figure(figsize=(assembly_width/100, height/100), dpi=100)
         self.assembly_canvas = FigureCanvas(self.assembly_figure)
         self.assembly_ax = self.assembly_figure.add_subplot(111)
+        self.assembly_ax.set_position([0.0, 0.0, 1.0, 1.0])
         self.assembly_canvas.setMinimumSize(assembly_width, height)
-        self.assembly_canvas.setMaximumSize(assembly_width, height)
+        self.assembly_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.assembly_canvas.setFocusPolicy(Qt.StrongFocus)
+        self.assembly_canvas.installEventFilter(self)
         
         self.windowAssamble = QWidget()
         self.windowAssamble.setMinimumSize(assembly_width, height)
-        self.windowAssamble.setMaximumSize(assembly_width, height)
+        self.windowAssamble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         assembly_layout = QVBoxLayout()
         assembly_layout.setContentsMargins(0, 0, 0, 0)
         assembly_layout.addWidget(self.assembly_canvas)
@@ -353,7 +318,7 @@ class Visualizer(QWidget):
         
         # Cache for chart data
         self.chart_needs_update = True
-        self.chart_cache = {'A': None, 'B': None}
+        self.chart_cache = {}
         self.chart_canvas.installEventFilter(self)
         self._chart_info_artist = None
         
@@ -394,6 +359,283 @@ class Visualizer(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         
         # Don't draw here - wait until window is shown
+    
+    def _build_layer_specs(self, raw_layers, fallback_cfg):
+        """Normalize layer metadata (geometry + appearance) from settings."""
+        default_palette = ['#4a90e2', '#50e3c2', '#f5a623', '#d0021b']
+        alpha_top = 1.0
+        alpha_bottom = 0.6
+
+        default_bbox = {"width": 5.89, "height": 7.5}
+        default_pattern = {
+            "vbh": 10.0,
+            "ct": 2.945,
+            "cb": 2.945,
+            "epn": 2.0,
+            "epm": 0.65,
+            "thickness": 0.047,
+            "width": 0.544,
+        }
+        default_assembly = {"spacing": 0.05, "count": 9}
+
+        fallback_bbox = dict(default_bbox)
+        fallback_bbox.update(fallback_cfg.get("bbox", {}))
+        fallback_pattern = dict(default_pattern)
+        fallback_pattern.update(fallback_cfg.get("pattern", {}))
+        fallback_assembly = dict(default_assembly)
+        fallback_assembly.update(fallback_cfg.get("assembly", {}))
+
+        if not isinstance(raw_layers, (list, tuple)) or not raw_layers:
+            raw_layers = [{'type': 'Layer 1', 'shap': {}}]
+
+        specs = []
+        total_layers = len(raw_layers)
+        for idx, layer in enumerate(raw_layers):
+            layer_dict = layer if isinstance(layer, dict) else {}
+            layer_type = layer_dict.get('type')
+            layer_name = layer_type or f"Layer {idx + 1}"
+            shap_cfg = layer_dict.get('shap') if isinstance(layer_dict.get('shap'), dict) else {}
+
+            bbox_cfg = dict(fallback_bbox)
+            bbox_cfg.update(shap_cfg.get('bbox', {}))
+
+            pattern_cfg = dict(fallback_pattern)
+            pattern_cfg.update(shap_cfg.get('pattern', {}))
+
+            assembly_cfg = dict(fallback_assembly)
+            assembly_data = shap_cfg.get('assembly', {})
+            color_raw = None
+            alpha_raw = None
+            if isinstance(assembly_data, dict):
+                color_raw = assembly_data.get('color')
+                alpha_raw = assembly_data.get('alpha')
+                for key, value in assembly_data.items():
+                    if key in {'color', 'alpha'}:
+                        continue
+                    assembly_cfg[key] = value
+
+            color_value = str(color_raw).strip() if color_raw else default_palette[idx % len(default_palette)]
+            color_value = self._normalize_hex_color(color_value)
+            if alpha_raw is None:
+                if total_layers == 1:
+                    alpha_raw = alpha_top
+                else:
+                    span = alpha_top - alpha_bottom
+                    alpha_raw = alpha_top - (span * idx / max(1, total_layers - 1))
+            try:
+                alpha_value = max(0.0, min(1.0, float(alpha_raw)))
+            except (TypeError, ValueError):
+                alpha_value = alpha_top if idx == 0 else alpha_bottom
+
+            specs.append({
+                'index': idx,
+                'name': layer_name,
+                'color': color_value,
+                'alpha': alpha_value,
+                'layer_type': layer_type,
+                'shap': {
+                    'bbox': bbox_cfg,
+                    'pattern': pattern_cfg,
+                    'assembly': assembly_cfg,
+                },
+            })
+
+        return specs
+
+    def _create_layer_sessions(self, layer_specs):
+        """Instantiate AssemblyBuilder sessions for each layer definition."""
+        sessions = []
+        for spec in layer_specs:
+            shap_cfg = spec.get('shap', {})
+            bbox_cfg = shap_cfg.get('bbox', {})
+            pattern_cfg = shap_cfg.get('pattern', {})
+            assembly_cfg = shap_cfg.get('assembly', {})
+            layer_type = spec.get('layer_type') or spec.get('type')
+
+            thickness = pattern_cfg.get("thickness", 0.047)
+            coil_width_default = pattern_cfg.get("width", 0.544)
+            bbox_width = bbox_cfg.get("width", 5.89)
+            bbox_height = bbox_cfg.get("height", 7.5)
+
+            pattern = Pattern(width=bbox_width, height=bbox_height)
+            assembly = AssemblyParameters()
+            assembly.layer_thickness = thickness
+            assembly.coil_width = coil_width_default
+            assembly.spacing = assembly_cfg.get("spacing", assembly.spacing)
+            assembly.count = assembly_cfg.get("count", assembly.count)
+            assembly.update_offset_from_coil()
+            twist_skip = 8
+            count_value = max(0, int(round(assembly.count)))
+            assembly.no_twist_prefix = assembly.no_twist_suffix = 0
+            assembly.no_twist_left_prefix = assembly.no_twist_left_suffix = 0
+            assembly.no_twist_right_prefix = assembly.no_twist_right_suffix = 0
+            if layer_type == 'start':
+                assembly.no_twist_left_prefix = min(twist_skip, count_value)
+            elif layer_type == 'end':
+                assembly.no_twist_right_suffix = min(twist_skip, count_value)
+
+            step_exporter = StepExporter(thickness=thickness)
+            builder = AssemblyBuilder(
+                pattern=pattern,
+                assembly=assembly,
+                step_exporter=step_exporter,
+            )
+            parameters = builder.parameters
+
+            has_ct_cb = pattern_cfg.get('ct') is not None or pattern_cfg.get('cb') is not None
+            has_epn_epm = pattern_cfg.get('epn') is not None or pattern_cfg.get('epm') is not None
+
+            if has_ct_cb and not has_epn_epm:
+                builder.set_pattern_mode('A')
+            elif has_epn_epm and not has_ct_cb:
+                builder.set_pattern_mode('B')
+
+            pattern_defaults = {
+                'vb': pattern_cfg.get('vbh'),
+                'ct': pattern_cfg.get('ct'),
+                'cb': pattern_cfg.get('cb'),
+                'epn': pattern_cfg.get('epn'),
+                'epm': pattern_cfg.get('epm'),
+            }
+            for label, value in pattern_defaults.items():
+                if value is not None:
+                    builder.set_pattern_variable(label, value)
+
+            sessions.append({
+                'name': spec['name'],
+                'color': spec['color'],
+                'alpha': spec['alpha'],
+                'type': layer_type,
+                'builder': builder,
+                'pattern': pattern,
+                'assembly': assembly,
+                'parameters': parameters,
+                'step': step_exporter,
+            })
+        return sessions
+
+    def _activate_layer_session(self, index: int, *, initial: bool = False):
+        """Point visualizer references to the selected layer session."""
+        index = max(0, min(index, len(self.layer_sessions) - 1))
+        self.active_layer_index = index
+        session = self.layer_sessions[index]
+        self.assembly_builder = session['builder']
+        self.pattern = session['pattern']
+        self.parameters = session['parameters']
+        self.assembly_params = session['assembly']
+        self.step_exporter = session['step']
+        self.coil_width = self.assembly_params.coil_width
+        if hasattr(self, 'twist_button'):
+            self.twist_button.setChecked(self.assembly_params.twist_enabled)
+        self._update_layer_button_states()
+
+        if initial:
+            return
+
+        self.highlighted_layer_index = self.active_layer_index
+        self._sync_input_fields()
+        self._build_slider_panel()
+        self._update_slider_ranges()
+        self._update_sliders_from_pattern()
+        self.chart_needs_update = True
+        self._invalidate_chart_cache()
+        self._reset_assembly_view()
+        self._update_views_without_chart()
+        self._focus_assembly_canvas()
+
+    def _on_layer_button_clicked(self, index: int):
+        """Handle layer selection button clicks."""
+        if index == self.active_layer_index:
+            if self.highlighted_layer_index == index:
+                self.highlighted_layer_index = None
+            else:
+                self.highlighted_layer_index = index
+            self._focus_assembly_canvas()
+            self._draw_assembly()
+            return
+        self._activate_layer_session(index)
+        self.highlighted_layer_index = index
+        self._focus_assembly_canvas()
+
+    def _update_layer_button_states(self):
+        """Synchronize button checked state with active layer."""
+        if not self.layer_button_group:
+            return
+        button = self.layer_button_group.button(self.active_layer_index)
+        if button:
+            button.setChecked(True)
+
+    def _focus_assembly_canvas(self):
+        """Ensure the assembly canvas gains focus."""
+        if hasattr(self, 'assembly_canvas'):
+            self.assembly_canvas.setFocus()
+
+    @staticmethod
+    def _normalize_hex_color(value: str) -> str:
+        """Return a sanitized #rrggbb color string."""
+        if not isinstance(value, str):
+            return '#4a90e2'
+        hex_val = value.strip().lstrip('#')
+        if len(hex_val) == 3:
+            hex_val = ''.join(ch * 2 for ch in hex_val)
+        if len(hex_val) != 6:
+            return '#4a90e2'
+        try:
+            int(hex_val, 16)
+        except ValueError:
+            return '#4a90e2'
+        return f"#{hex_val.lower()}"
+
+    @staticmethod
+    def _ideal_text_color(bg_color: str) -> str:
+        """Choose black/white text for readability on colored backgrounds."""
+        color = bg_color.lstrip('#')
+        try:
+            r = int(color[0:2], 16)
+            g = int(color[2:4], 16)
+            b = int(color[4:6], 16)
+        except ValueError:
+            return '#000000'
+        luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+        return '#000000' if luminance > 0.6 else '#ffffff'
+
+    def _layer_button_stylesheet(self, color_hex: str) -> str:
+        """Return stylesheet snippet for a layer button based on its color."""
+        text_color = self._ideal_text_color(color_hex)
+        border_color = text_color if text_color == '#000000' else '#ffffff'
+        return f"""
+            QPushButton {{
+                padding: 6px 8px;
+                border: 2px solid transparent;
+                border-radius: 4px;
+                background-color: {color_hex};
+                color: {text_color};
+            }}
+            QPushButton:checked {{
+                border-color: {border_color};
+            }}
+        """
+
+    @staticmethod
+    def _hex_to_rgb(color_hex: str) -> Tuple[float, float, float]:
+        """Convert hex color to (r, g, b) tuple in 0-1 range."""
+        hex_value = (color_hex or '').lstrip('#')
+        if len(hex_value) == 3:
+            hex_value = ''.join(ch * 2 for ch in hex_value)
+        if len(hex_value) != 6:
+            hex_value = '4a90e2'
+        try:
+            r = int(hex_value[0:2], 16)
+            g = int(hex_value[2:4], 16)
+            b = int(hex_value[4:6], 16)
+        except ValueError:
+            r, g, b = 74, 144, 226
+        return (r / 255.0, g / 255.0, b / 255.0)
+
+    @staticmethod
+    def _quantity_color(color_hex: str) -> Quantity_Color:
+        r, g, b = Visualizer._hex_to_rgb(color_hex)
+        return Quantity_Color(r, g, b, Quantity_TOC_RGB)
     
     def keyPressEvent(self, event):
         """Handle keyboard shortcuts for 3D view control"""
@@ -512,7 +754,7 @@ class Visualizer(QWidget):
             super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
-        if obj is self.chart_canvas and event.type() == QEvent.KeyPress:
+        if obj in {self.chart_canvas, getattr(self, 'assembly_canvas', None)} and event.type() == QEvent.KeyPress:
             self.keyPressEvent(event)
             return True
         return super().eventFilter(obj, event)
@@ -898,24 +1140,8 @@ class Visualizer(QWidget):
     def _on_save_step_clicked(self):
         """Save array patterns to STEP/STL/OBJ."""
         try:
-            curves = self.assembly_builder.get_curves()
-            left_curve = curves['left']
-            right_curve = curves['right']
-            if not left_curve or not right_curve:
-                print("No valid shape to save")
-                return
-            flat_results = self.assembly_builder.build_flat_solids()
-            all_shapes = []
-            for inst in flat_results.get('left', []):
-                if inst.shape is not None:
-                    all_shapes.append(inst.shape)
-                elif inst.error:
-                    print(f"Skipping flat left #{inst.index}: {inst.error}")
-            for inst in flat_results.get('right', []):
-                if inst.shape is not None:
-                    all_shapes.append(inst.shape)
-                elif inst.error:
-                    print(f"Skipping flat right #{inst.index}: {inst.error}")
+            solids_info = self._collect_layer_solids()
+            all_shapes = [shape for entry in solids_info for shape in entry['shapes']]
 
             if not all_shapes:
                 print("No shapes selected for export.")
@@ -1006,6 +1232,44 @@ class Visualizer(QWidget):
 
         self._update_mode_button()
         self.slider_layout.addStretch()
+        self._build_layer_selector()
+
+    def _build_layer_selector(self):
+        """Render layer selection buttons at the bottom of the slider panel."""
+        if getattr(self, 'layer_button_container', None) is not None:
+            self.slider_layout.removeWidget(self.layer_button_container)
+            self.layer_button_container.deleteLater()
+            self.layer_button_container = None
+            self.layer_button_group = None
+
+        if not self.layer_sessions:
+            return
+
+        container = QWidget()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(4)
+        container.setLayout(layout)
+
+        button_group = QButtonGroup(container)
+        button_group.setExclusive(True)
+
+        for idx, session in enumerate(self.layer_sessions):
+            button = QPushButton(session['name'])
+            button.setCheckable(True)
+            button.setChecked(idx == self.active_layer_index)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(lambda _, i=idx: self._on_layer_button_clicked(i))
+            button.setMinimumHeight(28)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setStyleSheet(self._layer_button_stylesheet(session.get('color', '#4a90e2')))
+            layout.addWidget(button)
+            button_group.addButton(button, idx)
+
+        self.slider_layout.addWidget(container)
+        self.layer_button_container = container
+        self.layer_button_group = button_group
+        self._update_layer_button_states()
 
     def _on_slider_changed(self, label, value):
         """Handle slider value changes - update pattern and refresh views (without expensive calculations)"""
@@ -1101,13 +1365,22 @@ class Visualizer(QWidget):
 
     def _invalidate_chart_cache(self, mode: Optional[str] = None):
         """Invalidate cached chart data."""
-        if not hasattr(self, 'chart_cache') or not isinstance(self.chart_cache, dict):
-            self.chart_cache = {'A': None, 'B': None}
-            return
+        layer_cache = self._get_layer_cache()
         if mode is None:
-            self.chart_cache = {'A': None, 'B': None}
+            layer_cache['A'] = None
+            layer_cache['B'] = None
         else:
-            self.chart_cache[mode] = None
+            layer_cache[mode] = None
+
+    def _get_layer_cache(self, index: Optional[int] = None) -> Dict[str, Optional[dict]]:
+        """Retrieve (and initialize) the chart cache for a given layer."""
+        if not hasattr(self, 'chart_cache') or not isinstance(self.chart_cache, dict):
+            self.chart_cache = {}
+        idx = self.active_layer_index if index is None else index
+        cache = self.chart_cache.setdefault(idx, {'A': None, 'B': None})
+        cache.setdefault('A', None)
+        cache.setdefault('B', None)
+        return cache
 
     def _chart_is_3d(self) -> bool:
         return hasattr(self, 'chart_ax') and getattr(self.chart_ax, 'name', '').lower() == '3d'
@@ -1195,18 +1468,12 @@ class Visualizer(QWidget):
         """Update the 3D model in the viewer when pattern changes."""
         try:
             self.viewer3d._display.EraseAll()
-            flat_results = self.assembly_builder.build_flat_solids()
-            for inst in flat_results.get('left', []):
-                if inst.shape is not None:
-                    self.viewer3d._display.DisplayShape(inst.shape, update=False, color='BLUE', transparency=0.2)
-                elif inst.error:
-                    print(f"Flat left #{inst.index} error: {inst.error}")
-
-            for inst in flat_results.get('right', []):
-                if inst.shape is not None:
-                    self.viewer3d._display.DisplayShape(inst.shape, update=False, color='CYAN', transparency=0.3)
-                elif inst.error:
-                    print(f"Flat right #{inst.index} error: {inst.error}")
+            solids_info = self._collect_layer_solids()
+            for entry in solids_info:
+                qcolor = self._quantity_color(entry['color'])
+                transparency = min(0.9, max(0.0, 1.0 - entry.get('alpha', 1.0)))
+                for shape in entry['shapes']:
+                    self.viewer3d._display.DisplayShape(shape, update=False, color=qcolor, transparency=transparency)
 
             self.viewer3d._display.FitAll()
             self.viewer3d._display.Repaint()
@@ -1303,53 +1570,183 @@ class Visualizer(QWidget):
         self.pattern_figure.tight_layout(pad=0)
         self.pattern_canvas.draw()
     
+    def _compute_layer_layout(self, include_instances: bool = False):
+        """Compute per-layer offsets and optional 2D instances."""
+        render_data = []
+        content_width = 0.0
+        max_height = 0.0
+        cumulative_offset = 0.0
+        layer_count = len(self.layer_sessions)
+
+        for idx, session in enumerate(self.layer_sessions):
+            builder = session['builder']
+            assembly_cfg = session.get('assembly')
+            coil_width = assembly_cfg.coil_width if assembly_cfg else self.assembly_params.coil_width
+            spacing_between = max(0.0, assembly_cfg.spacing if assembly_cfg else self.assembly_params.spacing)
+            session_instances = builder.build_2d_instances()
+
+            if session_instances:
+                first_offset = session_instances[0].offset
+                last_offset = session_instances[-1].offset
+            else:
+                first_offset = 0.0
+                last_offset = 0.0
+
+            offset_x = cumulative_offset - first_offset
+            entry = {
+                'index': idx,
+                'session': session,
+                'builder': builder,
+                'offset_x': offset_x,
+            }
+            if include_instances:
+                entry['instances'] = session_instances
+            render_data.append(entry)
+
+            layer_span = max((last_offset - first_offset) + coil_width, 1e-9)
+            cumulative_offset += layer_span
+            content_width = max(content_width, cumulative_offset)
+            max_height = max(max_height, builder.height)
+
+            if idx < layer_count - 1:
+                cumulative_offset += spacing_between
+
+        return render_data, content_width, max_height
+
+    def _collect_layer_solids(self):
+        """Build 3D solids for every layer with offsets applied."""
+        solids_info = []
+        layout, _, _ = self._compute_layer_layout(include_instances=False)
+        for data in layout:
+            session = data['session']
+            builder = data['builder']
+            offset_x = data['offset_x']
+            color = session.get('color', '#4a90e2')
+            alpha = session.get('alpha', 1.0)
+            layer_solids = builder.build_flat_solids()
+            shapes: List[Any] = []
+
+            for inst in layer_solids.get('left', []):
+                if inst.shape is None:
+                    continue
+                shape = StepExporter.translate_shape(inst.shape, offset_x, 0.0, 0.0) if offset_x else inst.shape
+                shapes.append(shape)
+
+            for inst in layer_solids.get('right', []):
+                if inst.shape is None:
+                    continue
+                shape = StepExporter.translate_shape(inst.shape, offset_x, 0.0, 0.0) if offset_x else inst.shape
+                shapes.append(shape)
+
+            if shapes:
+                solids_info.append({
+                    'color': color,
+                    'alpha': alpha,
+                    'shapes': shapes,
+                })
+
+        return solids_info
+
     def _draw_assembly(self):
         """Draw the assembly with repeated shape patterns"""
         self.assembly_ax.clear()
         
-        instances = self.assembly_builder.build_2d_instances()
-        if not instances:
+        if not self.layer_sessions:
             self.assembly_view_limits = None
             self.assembly_canvas.draw()
             return
 
-        # Set transparency for overlapping visualization
-        base_alpha = 0.5
-        
-        # Draw repeated patterns
-        for inst in instances:
-            xs = [p[0] for p in inst.left_shape]
-            ys = [p[1] for p in inst.left_shape]
-            # Fill the shape
-            self.assembly_ax.fill(xs, ys, color='lightblue', alpha=base_alpha * 0.6)
-            # Draw the shape outline
-            self.assembly_ax.plot(xs, ys, 'b-', linewidth=0.8, alpha=base_alpha)
-            
-            # Draw right shape (mirrored)
-            xs_right = [p[0] for p in inst.right_shape]
-            ys_right = [p[1] for p in inst.right_shape]
-            # Fill the mirrored shape
-            self.assembly_ax.fill(xs_right, ys_right, color='lightblue', alpha=base_alpha * 0.3)
-            # Draw the mirrored shape outline with dashed line
-            self.assembly_ax.plot(xs_right, ys_right, 'b--', linewidth=0.8, alpha=base_alpha * 0.5)
+        edge_highlight_color = '#d32f2f'
+        layer_outline_color = '#0b3d91'
+
+        def shift_points(points, offset_x):
+            if not points:
+                return []
+            return [(x + offset_x, y) for x, y in points]
+
+        def render_polygon(points, fill_color, face_alpha, outline_color, linestyle='-', line_width=0.9):
+            if not points:
+                return
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            self.assembly_ax.fill(xs, ys, color=fill_color, alpha=face_alpha, linewidth=0)
+            line_alpha = 1.0 if outline_color == edge_highlight_color else min(1.0, face_alpha + 0.25)
+            self.assembly_ax.plot(xs, ys, linestyle=linestyle, linewidth=line_width, color=outline_color, alpha=line_alpha)
+
+        render_data, content_width, max_height = self._compute_layer_layout(include_instances=True)
+        if not render_data:
+            self.assembly_view_limits = None
+            self.assembly_canvas.draw()
+            return
+        for entry in render_data:
+            entry['bbox'] = None
+
+        for data in render_data:
+            session = data['session']
+            instances = data.get('instances') or []
+            if not instances:
+                continue
+
+            layer_color = session.get('color', '#4a90e2')
+            base_alpha = session.get('alpha', 1.0)
+            left_alpha = base_alpha
+            mirrored_alpha = max(0.15, base_alpha * 0.5)
+            line_width = 1.0
+            layer_min_x = float('inf')
+            layer_max_x = float('-inf')
+            layer_min_y = float('inf')
+            layer_max_y = float('-inf')
+
+            total_instances = len(instances)
+            for inst_idx, inst in enumerate(instances):
+                is_edge = inst_idx == 0 or inst_idx == total_instances - 1
+                outline_color = edge_highlight_color if is_edge else layer_color
+                offset_points_left = shift_points(inst.left_shape, data['offset_x'])
+                offset_points_right = shift_points(inst.right_shape, data['offset_x'])
+
+                render_polygon(offset_points_left, layer_color, left_alpha, outline_color, linestyle='-', line_width=line_width)
+                render_polygon(offset_points_right, layer_color, mirrored_alpha, outline_color, linestyle='--', line_width=max(0.6, line_width * 0.85))
+
+                for pts in (offset_points_left, offset_points_right):
+                    if not pts:
+                        continue
+                    xs = [pt[0] for pt in pts]
+                    ys = [pt[1] for pt in pts]
+                    layer_min_x = min(layer_min_x, min(xs))
+                    layer_max_x = max(layer_max_x, max(xs))
+                    layer_min_y = min(layer_min_y, min(ys))
+                    layer_max_y = max(layer_max_y, max(ys))
+
+            if layer_min_x != float('inf'):
+                data['bbox'] = (layer_min_x, layer_min_y, layer_max_x, layer_max_y)
+            else:
+                data['bbox'] = None
         
         # Set equal aspect ratio
         self.assembly_ax.set_aspect('equal')
         
+        # Draw highlighted layer outline if requested
+        if self.highlighted_layer_index is not None:
+            bbox_data = next((item for item in render_data if item['index'] == self.highlighted_layer_index), None)
+            if bbox_data and bbox_data.get('bbox'):
+                min_x, min_y, max_x, max_y = bbox_data['bbox']
+                xs = [min_x, max_x, max_x, min_x, min_x]
+                ys = [min_y, min_y, max_y, max_y, min_y]
+                self.assembly_ax.plot(xs, ys, color=layer_outline_color, linewidth=1.4, linestyle='-')
+
         # Calculate view bounds using current canvas aspect ratio (fallback to grid-defined width)
         canvas_width = self.assembly_canvas.width() or (self.height * 2 + self.spacing)
         canvas_height = self.assembly_canvas.height() or self.height
         assembly_aspect = canvas_width / max(1, canvas_height)
-        view_height = self.assembly_builder.height * 1.1  # Add 10% margin
-        view_width = view_height * assembly_aspect  # Match window aspect ratio
-        
-        # Center the view horizontally on the content
-        last_start = instances[-1].offset if instances else 0.0
-        content_width = last_start + self.assembly_builder.width
+
+        view_height = max(max_height * 1.1, 1e-6)
+        view_width = max(view_height * assembly_aspect, 1e-6)
+
         center_x = content_width / 2
-        
+
         default_xlim = (center_x - view_width/2, center_x + view_width/2)
-        default_ylim = (-view_height * 0.05, view_height * 0.95)
+        margin_y = max(0.05 * max_height, 0.1)
+        default_ylim = (-margin_y, max_height + margin_y)
 
         if self.assembly_view_limits is None:
             self.assembly_view_limits = (default_xlim, default_ylim)
@@ -1396,6 +1793,7 @@ class Visualizer(QWidget):
 
         is_mode_a = self.assembly_builder.get_pattern_mode() == 'A'
         mode_key = 'A' if is_mode_a else 'B'
+        layer_cache = self._get_layer_cache()
         if is_mode_a:
             cache_snapshot = dict(base_snapshot)
             cache_snapshot.update({
@@ -1415,7 +1813,7 @@ class Visualizer(QWidget):
                 'corner_top_value': pattern.corner_top_value,
             })
 
-        cache = getattr(self, 'chart_cache', {}).get(mode_key)
+        cache = layer_cache.get(mode_key)
         need_recompute = not cache or not snapshots_close(cache['snapshot'], cache_snapshot)
 
         if is_mode_a:
@@ -1460,14 +1858,14 @@ class Visualizer(QWidget):
                 finally:
                     self.assembly_builder.restore_pattern(state_snapshot)
 
-                self.chart_cache['A'] = {
+                layer_cache['A'] = {
                     'snapshot': dict(cache_snapshot),
                     'x_values': x_values,
                     'area_values': area_values,
                     'coeff_values': coeff_values,
                     'resistance_values': resistance_values,
                 }
-                data = self.chart_cache['A']
+                data = layer_cache['A']
             else:
                 data = cache
                 x_values = data['x_values']
@@ -1531,7 +1929,7 @@ class Visualizer(QWidget):
                 if max_res > 1e-9 and max_area > 1e-9:
                     scale = max_area / max_res
 
-                self.chart_cache['B'] = {
+                layer_cache['B'] = {
                     'snapshot': dict(cache_snapshot),
                     'epn_values': epn_values,
                     'epm_values': epm_values,
@@ -1539,7 +1937,7 @@ class Visualizer(QWidget):
                     'resistance_grid': resistance_grid,
                     'scale': scale,
                 }
-                data = self.chart_cache['B']
+                data = layer_cache['B']
             else:
                 data = cache
                 epn_values = data['epn_values']
