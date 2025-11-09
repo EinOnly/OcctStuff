@@ -223,8 +223,16 @@ class Visualizer(QWidget):
         self.mode_button = None
         self.assembly_view_limits = None
         cfg = pattern_p or {}
+        base_pattern_cfg = cfg.get("pattern", {})
+        base_assembly_cfg = cfg.get("assembly", {})
+        twist_default = bool(
+            cfg.get("twist") or
+            base_pattern_cfg.get("twist") or
+            base_assembly_cfg.get("twist")
+        )
         self.layer_specs = self._build_layer_specs(layer_p, cfg)
         self.layer_sessions = self._create_layer_sessions(self.layer_specs)
+        self._twist_enabled = twist_default
         self.active_layer_index = 0
         self.layer_button_container = None
         self.layer_button_group = None
@@ -465,17 +473,27 @@ class Visualizer(QWidget):
             assembly.count = assembly_cfg.get("count", assembly.count)
             assembly.update_offset_from_coil()
 
-            twist_skip_start = 8
-            twist_skip_end = 9
+            twist_value = assembly_cfg.get("twist")
+            assembly.twist_enabled = self._twist_enabled if twist_value is None else bool(twist_value)
+
+            twist_skip_cfg = assembly_cfg.get("twist_skip")
+            try:
+                twist_skip_cfg = max(0, int(twist_skip_cfg))
+            except (TypeError, ValueError):
+                twist_skip_cfg = None
+            default_start_skip = 9
+            default_end_skip = 8
 
             count_value = max(0, int(round(assembly.count)))
             assembly.no_twist_prefix = assembly.no_twist_suffix = 0
             assembly.no_twist_left_prefix = assembly.no_twist_left_suffix = 0
             assembly.no_twist_right_prefix = assembly.no_twist_right_suffix = 0
             if layer_type == 'start':
-                assembly.no_twist_left_prefix = min(twist_skip_start, count_value)
+                skip = twist_skip_cfg if twist_skip_cfg is not None else default_start_skip
+                assembly.no_twist_left_prefix = min(skip, count_value)
             elif layer_type == 'end':
-                assembly.no_twist_right_suffix = min(twist_skip_end, count_value)
+                skip = twist_skip_cfg if twist_skip_cfg is not None else default_end_skip
+                assembly.no_twist_right_suffix = min(skip, count_value)
 
             step_exporter = StepExporter(thickness=thickness)
             builder = AssemblyBuilder(
