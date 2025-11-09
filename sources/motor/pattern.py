@@ -378,6 +378,52 @@ class Pattern:
             'top_center': self._fmt_point(top_limit, self.height),
         }
 
+    def _split_curve_sections(self, curve: List[Tuple[float, float]],
+                              split_y: float) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Split a monotonic curve into lower/upper sections at the given Y."""
+        lower: List[Tuple[float, float]] = []
+        upper: List[Tuple[float, float]] = []
+        if not curve:
+            return lower, upper
+
+        def add_unique(target: List[Tuple[float, float]], point: Tuple[float, float]):
+            if not target or not self._points_close(target[-1], point):
+                target.append(point)
+
+        eps = 1e-9
+        split_idx = None
+        for idx, point in enumerate(curve):
+            if point[1] >= split_y - eps:
+                split_idx = idx
+                break
+        if split_idx is None:
+            return list(curve), []
+
+        prev_index = max(0, split_idx - 1)
+        prev_point = curve[prev_index]
+        curr_point = curve[split_idx]
+
+        if split_idx == 0:
+            seam_point = self._fmt_point(curr_point[0], split_y)
+        else:
+            if abs(curr_point[1] - prev_point[1]) <= eps:
+                seam_x = curr_point[0]
+            else:
+                t = (split_y - prev_point[1]) / (curr_point[1] - prev_point[1])
+                t = max(0.0, min(1.0, t))
+                seam_x = prev_point[0] + t * (curr_point[0] - prev_point[0])
+            seam_point = self._fmt_point(seam_x, split_y)
+
+        for idx in range(split_idx):
+            add_unique(lower, curve[idx])
+        add_unique(lower, seam_point)
+
+        add_unique(upper, seam_point)
+        for idx in range(split_idx, len(curve)):
+            add_unique(upper, curve[idx])
+
+        return lower, upper
+
     # --------------------------------------------------------------------- #
     # Geometry extraction
     # --------------------------------------------------------------------- #
@@ -453,6 +499,69 @@ class Pattern:
 
         return curve
 
+    def _apply_ct_offset_state(self, ct_offset: float) -> bool:
+        """Temporarily enlarge the top corner span by ct_offset."""
+        if ct_offset <= POINT_EPSILON:
+            return False
+
+        target_top = max(0.0, self.vlw + ct_offset)
+        if target_top <= self.vlw + POINT_EPSILON:
+            return False
+
+        required_width = max(self.width, target_top * 2.0)
+        if required_width > self.width + POINT_EPSILON:
+            self.width = required_width
+            self._apply_constraints()
+
+        if self._is_mode_a():
+            self.SetVariable('vlw_top', target_top)
+        else:
+            self.SetVariable('corner_top', max(0.0, self.corner_top_value + ct_offset))
+        return True
+
+    def GetCurveWithCtOffset(self, ct_offset: float, split_y: float | None = None) -> List[Tuple[float, float]]:
+        """
+        Generate a curve where the upper section uses an increased CT value.
+        The lower section is preserved from the original geometry.
+        """
+        if ct_offset <= POINT_EPSILON:
+            return self.GetCurve()
+
+        base_curve = self.GetCurve()
+        if not base_curve:
+            return []
+
+        if split_y is None:
+            split_target = max(0.0, min(self.height, self.height - self.vth))
+        else:
+            split_target = min(max(split_y, 0.0), self.height)
+
+        original_state = self.snapshot()
+        try:
+            if not self._apply_ct_offset_state(ct_offset):
+                return base_curve
+            offset_curve = self.GetCurve()
+        finally:
+            self.restore(original_state)
+
+        if not offset_curve:
+            return base_curve
+
+        lower_base, _ = self._split_curve_sections(base_curve, split_target)
+        _, upper_variant = self._split_curve_sections(offset_curve, split_target)
+
+        if not lower_base or not upper_variant:
+            return base_curve
+
+        combined = list(lower_base)
+        if self._points_close(combined[-1], upper_variant[0]):
+            combined.extend(upper_variant[1:])
+        else:
+            combined.extend(upper_variant)
+
+        return combined
+
+
     def _build_clipped_left_curve(self) -> List[Tuple[float, float]]:
         """Return left curve clamped to the symmetry axis."""
         raw_curve = self.GetCurve()
@@ -520,8 +629,9 @@ class Pattern:
     # --------------------------------------------------------------------- #
     # Shape utilities
     # --------------------------------------------------------------------- #
-    def GetShape(self, offset: float, space: float) -> List[Tuple[float, float]]:
-        curve_left = self.GetCurve()
+    def GetShape(self, offset: float, space: float,
+                 curve_override: List[Tuple[float, float]] | None = None) -> List[Tuple[float, float]]:
+        curve_left = curve_override if curve_override is not None else self.GetCurve()
         if not curve_left:
             return []
 

@@ -24,6 +24,9 @@ class AssemblyParameters:
     no_twist_left_suffix: int = 0
     no_twist_right_prefix: int = 0
     no_twist_right_suffix: int = 0
+    ct_offset_left_prefix: int = 0
+    ct_offset_amount: float = 0.0
+    ct_offset_split_y: float | None = None
 
     def update_offset_from_coil(self) -> None:
         """Keep offset aligned with current coil width and spacing."""
@@ -68,6 +71,18 @@ class AssemblyParameters:
         if suffix_limit > 0 and index >= max(0, total - suffix_limit):
             return False
         return True
+
+    def ct_offset_left_enabled(self) -> bool:
+        return self.ct_offset_amount > 0.0 and self.ct_offset_left_prefix > 0
+
+    def should_use_ct_offset_left(self, index: int, total_count: int | None = None) -> bool:
+        if not self.ct_offset_left_enabled():
+            return False
+        total = total_count if total_count is not None else max(0, int(self.count))
+        if total <= 0:
+            return False
+        limit = min(max(0, self.ct_offset_left_prefix), total)
+        return index < limit
 
 
 class Parameter:

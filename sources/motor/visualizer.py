@@ -488,9 +488,20 @@ class Visualizer(QWidget):
             assembly.no_twist_prefix = assembly.no_twist_suffix = 0
             assembly.no_twist_left_prefix = assembly.no_twist_left_suffix = 0
             assembly.no_twist_right_prefix = assembly.no_twist_right_suffix = 0
+            assembly.ct_offset_left_prefix = 0
+            assembly.ct_offset_amount = 0.0
+            assembly.ct_offset_split_y = None
             if layer_type == 'start':
                 skip = twist_skip_cfg if twist_skip_cfg is not None else default_start_skip
                 assembly.no_twist_left_prefix = min(skip, count_value)
+                width_override = pattern_cfg.get("width")
+                try:
+                    ct_amount = float(width_override) if width_override is not None else float(coil_width_default)
+                except (TypeError, ValueError):
+                    ct_amount = float(coil_width_default)
+                if assembly.no_twist_left_prefix > 0 and ct_amount > 0.0:
+                    assembly.ct_offset_left_prefix = assembly.no_twist_left_prefix
+                    assembly.ct_offset_amount = max(0.0, ct_amount)
             elif layer_type == 'end':
                 skip = twist_skip_cfg if twist_skip_cfg is not None else default_end_skip
                 assembly.no_twist_right_suffix = min(skip, count_value)

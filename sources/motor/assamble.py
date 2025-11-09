@@ -179,28 +179,54 @@ class AssemblyBuilder:
             return []
         return shape
 
-    def build_2d_instances(self) -> List[Assembly2DInstance]:
+    def _compute_left_shape_variants(self) -> Dict[str, List[Tuple[float, float]]]:
         base_shape = self._compute_base_shape()
+        variants: Dict[str, List[Tuple[float, float]]] = {}
+        if not base_shape:
+            return variants
+        variants['base'] = base_shape
+
+        if self.assembly.ct_offset_left_enabled():
+            offset_curve = self.pattern.GetCurveWithCtOffset(
+                ct_offset=self.assembly.ct_offset_amount,
+                split_y=self.assembly.ct_offset_split_y,
+            )
+            ct_shape = self.pattern.GetShape(
+                offset=self.assembly.offset,
+                space=self.assembly.spacing,
+                curve_override=offset_curve,
+            )
+            if ct_shape:
+                variants['ct'] = ct_shape
+
+        return variants
+
+    def build_2d_instances(self) -> List[Assembly2DInstance]:
+        shape_variants = self._compute_left_shape_variants()
+        base_shape = shape_variants.get('base')
         if not base_shape:
             return []
 
-        twisted_shape = self._apply_twist(base_shape)
-        twist_shapes = {
-            False: base_shape,
-            True: twisted_shape,
-        }
-        mirrored_cache = {
-            key: self._mirror_shape(shape) if shape else []
-            for key, shape in twist_shapes.items()
-        }
+        twist_shapes: Dict[Tuple[str, bool], List[Tuple[float, float]]] = {}
+        for key, shape in shape_variants.items():
+            twist_shapes[(key, False)] = shape
+            twist_shapes[(key, True)] = self._apply_twist(shape)
+
+        mirrored_cache: Dict[Tuple[str, bool], List[Tuple[float, float]]] = {}
+        for key in shape_variants.keys():
+            for flag in (False, True):
+                variant = twist_shapes.get((key, flag))
+                mirrored_cache[(key, flag)] = self._mirror_shape(variant) if variant else []
 
         instances: List[Assembly2DInstance] = []
         total_instances = max(0, int(self.assembly.count))
         for index, offset in enumerate(self.assembly.iter_offsets()):
             twist_left = self.assembly.should_twist_left(index, total_instances)
             twist_right = self.assembly.should_twist_right(index, total_instances)
-            left_variant = twist_shapes[True] if twist_left else twist_shapes[False]
-            right_variant = mirrored_cache[True] if twist_right else mirrored_cache[False]
+            use_ct = self.assembly.should_use_ct_offset_left(index, total_instances)
+            variant_key = 'ct' if (use_ct and 'ct' in shape_variants) else 'base'
+            left_variant = twist_shapes[(variant_key, True if twist_left else False)]
+            right_variant = mirrored_cache[(variant_key, True if twist_right else False)]
             left_shape = [(x + offset, y) for x, y in left_variant]
             right_shape = [(x + offset, y) for x, y in right_variant]
             instances.append(Assembly2DInstance(
@@ -234,44 +260,50 @@ class AssemblyBuilder:
 
     def build_flat_solids(self) -> Dict[str, List[AssemblySolidInstance]]:
         thickness = self.step_exporter.thickness
-        base_curve = self._compute_base_shape()
-        if len(base_curve) < 3:
+        shape_variants = self._compute_left_shape_variants()
+        base_shape = shape_variants.get('base')
+        if not base_shape or len(base_shape) < 3:
             return {'left': [], 'right': []}
 
-        twisted_curve = self._apply_twist(base_curve)
-        variant_curves = {
-            False: base_curve,
-            True: twisted_curve,
-        }
-        mirrored_variants = {
-            flag: self._mirror_shape(curve) if curve else []
-            for flag, curve in variant_curves.items()
-        }
+        twisted_variants: Dict[Tuple[str, bool], List[Tuple[float, float]]] = {}
+        for key, shape in shape_variants.items():
+            twisted_variants[(key, False)] = shape
+            twisted_variants[(key, True)] = self._apply_twist(shape)
 
-        left_cache: Dict[bool, Optional[Any]] = {False: None, True: None}
-        right_cache: Dict[bool, Optional[Any]] = {False: None, True: None}
+        mirrored_variants: Dict[Tuple[str, bool], List[Tuple[float, float]]] = {}
+        for key in shape_variants.keys():
+            for flag in (False, True):
+                curve = twisted_variants.get((key, flag))
+                mirrored_variants[(key, flag)] = self._mirror_shape(curve) if curve else []
 
-        for flag in (False, True):
-            curve_left = variant_curves[flag]
-            if curve_left:
-                try:
-                    left_cache[flag] = self.step_exporter.create_shape_from_curve(curve_left, z_offset=thickness)
-                except Exception as err:
-                    message = f"{type(err).__name__}: {err}"
-                    return {
-                        'left': [AssemblySolidInstance(index=0, offset=0.0, shape=None, error=message)],
-                        'right': []
-                    }
-            curve_right = mirrored_variants[flag]
-            if curve_right:
-                try:
-                    right_cache[flag] = self.step_exporter.create_shape_from_curve(curve_right, z_offset=0.0)
-                except Exception as err:
-                    message = f"{type(err).__name__}: {err}"
-                    return {
-                        'left': [],
-                        'right': [AssemblySolidInstance(index=0, offset=0.0, shape=None, error=message)],
-                    }
+        left_cache: Dict[Tuple[str, bool], Optional[Any]] = {}
+        right_cache: Dict[Tuple[str, bool], Optional[Any]] = {}
+
+        for variant_key in shape_variants.keys():
+            for flag in (False, True):
+                curve_left = twisted_variants.get((variant_key, flag))
+                if curve_left:
+                    try:
+                        left_cache[(variant_key, flag)] = self.step_exporter.create_shape_from_curve(curve_left, z_offset=thickness)
+                    except Exception as err:
+                        message = f"{type(err).__name__}: {err}"
+                        return {
+                            'left': [AssemblySolidInstance(index=0, offset=0.0, shape=None, error=message)],
+                            'right': []
+                        }
+
+        for variant_key in shape_variants.keys():
+            for flag in (False, True):
+                curve_right = mirrored_variants.get((variant_key, flag))
+                if curve_right:
+                    try:
+                        right_cache[(variant_key, flag)] = self.step_exporter.create_shape_from_curve(curve_right, z_offset=0.0)
+                    except Exception as err:
+                        message = f"{type(err).__name__}: {err}"
+                        return {
+                            'left': [],
+                            'right': [AssemblySolidInstance(index=0, offset=0.0, shape=None, error=message)],
+                        }
 
         total_instances = max(0, int(self.assembly.count))
         results_left: List[AssemblySolidInstance] = []
@@ -280,8 +312,10 @@ class AssemblyBuilder:
         for index, offset in enumerate(self.assembly.iter_offsets()):
             twist_left = self.assembly.should_twist_left(index, total_instances)
             twist_right = self.assembly.should_twist_right(index, total_instances)
-            base_left = left_cache.get(True if twist_left else False)
-            base_right = right_cache.get(True if twist_right else False)
+            use_ct = self.assembly.should_use_ct_offset_left(index, total_instances)
+            variant_key = 'ct' if (use_ct and 'ct' in shape_variants) else 'base'
+            base_left = left_cache.get((variant_key, True if twist_left else False))
+            base_right = right_cache.get((variant_key, True if twist_right else False))
             if base_left:
                 left_shape = self.step_exporter.translate_shape(base_left, offset, 0.0, 0.0)
                 results_left.append(AssemblySolidInstance(index=index, offset=offset, shape=left_shape))
