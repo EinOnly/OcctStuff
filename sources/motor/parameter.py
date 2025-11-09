@@ -18,6 +18,12 @@ class AssemblyParameters:
     layer_thickness: float = 0.047
     coil_width: float = 0.544
     offset: float = coil_width + spacing
+    no_twist_prefix: int = 0
+    no_twist_suffix: int = 0
+    no_twist_left_prefix: int = 0
+    no_twist_left_suffix: int = 0
+    no_twist_right_prefix: int = 0
+    no_twist_right_suffix: int = 0
 
     def update_offset_from_coil(self) -> None:
         """Keep offset aligned with current coil width and spacing."""
@@ -26,6 +32,42 @@ class AssemblyParameters:
     def iter_offsets(self) -> Iterable[float]:
         for idx in range(max(0, int(self.count))):
             yield idx * self.offset
+
+    def should_twist(self, index: int, total_count: int | None = None) -> bool:
+        """Determine if a given instance index should apply twist."""
+        return self.should_twist_left(index, total_count)
+
+    def should_twist_left(self, index: int, total_count: int | None = None) -> bool:
+        if not self.twist_enabled:
+            return False
+        total = total_count if total_count is not None else max(0, int(self.count))
+        if total <= 0:
+            return False
+        if index < max(0, self.no_twist_prefix):
+            return False
+        suffix_limit = max(0, self.no_twist_suffix)
+        if suffix_limit > 0 and index >= max(0, total - suffix_limit):
+            return False
+        if index < max(0, self.no_twist_left_prefix):
+            return False
+        left_suffix = max(0, self.no_twist_left_suffix)
+        if left_suffix > 0 and index >= max(0, total - left_suffix):
+            return False
+        return True
+
+    def should_twist_right(self, index: int, total_count: int | None = None) -> bool:
+        if not self.twist_enabled:
+            return False
+        total = total_count if total_count is not None else max(0, int(self.count))
+        if total <= 0:
+            return False
+        prefix_limit = max(0, self.no_twist_right_prefix)
+        if prefix_limit > 0 and index < prefix_limit:
+            return False
+        suffix_limit = max(0, self.no_twist_right_suffix)
+        if suffix_limit > 0 and index >= max(0, total - suffix_limit):
+            return False
+        return True
 
 
 class Parameter:

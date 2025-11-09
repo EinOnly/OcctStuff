@@ -464,15 +464,18 @@ class Visualizer(QWidget):
             assembly.spacing = assembly_cfg.get("spacing", assembly.spacing)
             assembly.count = assembly_cfg.get("count", assembly.count)
             assembly.update_offset_from_coil()
-            twist_skip = 8
+
+            twist_skip_start = 8
+            twist_skip_end = 9
+
             count_value = max(0, int(round(assembly.count)))
             assembly.no_twist_prefix = assembly.no_twist_suffix = 0
             assembly.no_twist_left_prefix = assembly.no_twist_left_suffix = 0
             assembly.no_twist_right_prefix = assembly.no_twist_right_suffix = 0
             if layer_type == 'start':
-                assembly.no_twist_left_prefix = min(twist_skip, count_value)
+                assembly.no_twist_left_prefix = min(twist_skip_start, count_value)
             elif layer_type == 'end':
-                assembly.no_twist_right_suffix = min(twist_skip, count_value)
+                assembly.no_twist_right_suffix = min(twist_skip_end, count_value)
 
             step_exporter = StepExporter(thickness=thickness)
             builder = AssemblyBuilder(
