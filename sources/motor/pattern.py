@@ -500,66 +500,49 @@ class Pattern:
         return curve
 
     def _apply_ct_offset_state(self, ct_offset: float) -> bool:
-        """Temporarily enlarge the top corner span by ct_offset."""
+        """
+        Temporarily enlarge the top corner span by ct_offset, keeping the lower half intact.
+        Adjust both horizontal (vlw) and vertical (vth) radii so the superellipse corner grows
+        along the same bounding rectangle.
+        """
         if ct_offset <= POINT_EPSILON:
             return False
 
-        target_top = max(0.0, self.vlw + ct_offset)
-        if target_top <= self.vlw + POINT_EPSILON:
-            return False
+        half_width = max(0.0, self.width / 2.0)
+        half_height = max(0.0, self.height / 2.0)
 
-        required_width = max(self.width, target_top * 2.0)
-        if required_width > self.width + POINT_EPSILON:
-            self.width = required_width
-            self._apply_constraints()
+        variant_vlw = max(0.0, self.vlw + ct_offset)
+        variant_vth = max(0.0, self.vth + ct_offset)
 
-        if self._is_mode_a():
-            self.SetVariable('vlw_top', target_top)
-        else:
-            self.SetVariable('corner_top', max(0.0, self.corner_top_value + ct_offset))
+        if variant_vlw > half_width:
+            self.width = max(self.width, variant_vlw * 2.0)
+            half_width = max(0.0, self.width / 2.0)
+
+        variant_vth = min(half_height, variant_vth)
+
+        self.vlw = variant_vlw
+        self.vth = variant_vth
+        self.vrw = max(0.0, half_width - self.vlw)
+        self.vbh_top = max(0.0, half_height - self.vth)
+        self.corner_top_value = max(self.corner_top_value, self.vlw)
         return True
 
     def GetCurveWithCtOffset(self, ct_offset: float, split_y: float | None = None) -> List[Tuple[float, float]]:
         """
-        Generate a curve where the upper section uses an increased CT value.
-        The lower section is preserved from the original geometry.
+        Generate a curve where only the upper half uses an increased CT value.
+        The lower section remains unchanged because we only adjust top radii.
         """
-        if ct_offset <= POINT_EPSILON:
-            return self.GetCurve()
-
         base_curve = self.GetCurve()
-        if not base_curve:
-            return []
-
-        if split_y is None:
-            split_target = max(0.0, min(self.height, self.height - self.vth))
-        else:
-            split_target = min(max(split_y, 0.0), self.height)
+        if ct_offset <= POINT_EPSILON or not base_curve:
+            return base_curve
 
         original_state = self.snapshot()
         try:
             if not self._apply_ct_offset_state(ct_offset):
                 return base_curve
-            offset_curve = self.GetCurve()
+            return self.GetCurve()
         finally:
             self.restore(original_state)
-
-        if not offset_curve:
-            return base_curve
-
-        lower_base, _ = self._split_curve_sections(base_curve, split_target)
-        _, upper_variant = self._split_curve_sections(offset_curve, split_target)
-
-        if not lower_base or not upper_variant:
-            return base_curve
-
-        combined = list(lower_base)
-        if self._points_close(combined[-1], upper_variant[0]):
-            combined.extend(upper_variant[1:])
-        else:
-            combined.extend(upper_variant)
-
-        return combined
 
 
     def _build_clipped_left_curve(self) -> List[Tuple[float, float]]:
@@ -697,6 +680,20 @@ class Pattern:
             closed_shape.append(curve_left[0])
 
         return closed_shape
+
+    def GetShapeWithCtOffset(self, offset: float, space: float, ct_offset: float) -> List[Tuple[float, float]]:
+        """Build a closed shape after temporarily increasing the top CT span."""
+        if ct_offset <= POINT_EPSILON:
+            return []
+
+        state = self.snapshot()
+        try:
+            applied = self._apply_ct_offset_state(ct_offset)
+            if not applied:
+                return []
+            return self.GetShape(offset, space)
+        finally:
+            self.restore(state)
     
     def _clip_segment_const(self, x1: float, y1: float, x2: float, y2: float,
                             max_x: float, min_y: float, max_y: float) -> List[Tuple[float, float]]:
