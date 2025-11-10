@@ -14,7 +14,7 @@ pattern_p = {
     },
     "assembly": {
         "spacing": 0.05,
-        "count": 9,
+        "count": 18,
     },
 }
 
@@ -37,7 +37,7 @@ layer_p = [
             },
             "assembly": {
                 "spacing": 0.05,
-                "count": 9,
+                "count": 18,
                 "color": "#ff7043",
                 "alpha": 1.0,
                 "twist_skip": 8,
@@ -63,7 +63,7 @@ layer_p = [
             },
             "assembly": {
                 "spacing": 0.05,
-                "count": 9,
+                "count": 18,
                 "color": "#ffca28",
                 "alpha": 0.87,
                 "twist_skip": 0,
@@ -89,7 +89,7 @@ layer_p = [
             },
             "assembly": {
                 "spacing": 0.05,
-                "count": 9,
+                "count": 18,
                 "color": "#66bb6a",
                 "alpha": 0.74,
                 "twist_skip": 0,
@@ -115,7 +115,7 @@ layer_p = [
             },
             "assembly": {
                 "spacing": 0.05,
-                "count": 9,
+                "count": 18,
                 "color": "#42a5f5",
                 "alpha": 0.6,
                 "twist_skip": 9,
