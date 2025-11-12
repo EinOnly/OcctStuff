@@ -1,7 +1,7 @@
 pattern_p = {
     "bbox": {
         "width": 5.890,
-        "height": 7.500,
+        "height": 8.0710,
     },
     "pattern": {
         "vbh": 10.0,
@@ -23,8 +23,8 @@ layer_p = [
         "type": "start",
         "shap":{
             "bbox": {
-                "width": 5.890,
-                "height": 7.500,
+                "width": 5.9249,
+                "height": 8.0710,
             },
             "pattern": {
                 "vbh": 10.0,
@@ -33,7 +33,7 @@ layer_p = [
                 "epn": 2.00,
                 "epm": 0.650,
                 "thickness": 0.047,
-                "width": 0.544,
+                "width": 0.547,
             },
             "assembly": {
                 "spacing": 0.05,
@@ -49,8 +49,8 @@ layer_p = [
         "type": "normal",
         "shap":{
             "bbox": {
-                "width": 5.890,
-                "height": 7.500,
+                "width": 5.7600,
+                "height": 8.0710,
             },
             "pattern": {
                 "vbh": 10.0,
@@ -59,7 +59,7 @@ layer_p = [
                 "epn": 2.00,
                 "epm": 0.650,
                 "thickness": 0.047,
-                "width": 0.544,
+                "width": 0.5310,
             },
             "assembly": {
                 "spacing": 0.05,
@@ -75,8 +75,8 @@ layer_p = [
         "type": "normal",
         "shap":{
             "bbox": {
-                "width": 5.890,
-                "height": 7.500,
+                "width": 5.5900,
+                "height": 8.0710,
             },
             "pattern": {
                 "vbh": 10.0,
@@ -85,7 +85,7 @@ layer_p = [
                 "epn": 2.00,
                 "epm": 0.650,
                 "thickness": 0.047,
-                "width": 0.544,
+                "width": 0.5140,
             },
             "assembly": {
                 "spacing": 0.05,
@@ -101,8 +101,8 @@ layer_p = [
         "type": "end",
         "shap":{
             "bbox": {
-                "width": 5.890,
-                "height": 7.500,
+                "width": 5.4176,
+                "height": 8.0710,
             },
             "pattern": {
                 "vbh": 10.0,
@@ -111,7 +111,7 @@ layer_p = [
                 "epn": 2.00,
                 "epm": 0.650,
                 "thickness": 0.047,
-                "width": 0.544,
+                "width": 0.4970,
             },
             "assembly": {
                 "spacing": 0.05,
