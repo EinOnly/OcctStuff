@@ -1,16 +1,13 @@
-from typing import Dict, Any, Iterable, List, Tuple
 import numpy as np
+
+from superellipse import Superellipse
+from parameters import PPARAMS
+from calculate import Calculate
 
 from PyQt5.QtCore import Qt, QPointF
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
-from PyQt5.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QSizePolicy,
-)
-
-from parameters import PPARAMS
-
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
+from typing import Dict, Any, Iterable, List, Tuple
 
 class Pattern(QWidget):
     """Visualizes the current pattern geometry derived from PPARAMS."""
@@ -43,7 +40,7 @@ class Pattern(QWidget):
         self._params.bulkChanged.connect(self._on_bulk_changed)
 
     def _refresh_pattern(self):
-        self.canvas.setPattern(self.getPattern(self.read()))
+        self.canvas.setPattern(self.getPattern(self.read(), self.read()))
 
     # ------------------------------------------------------------------
     # Signal callbacks
@@ -54,25 +51,144 @@ class Pattern(QWidget):
     def _on_bulk_changed(self, payload: Dict[str, Any]):
         self._refresh_pattern()
 
-    def _buildOuter(self):
+    def _buildTopOuter(self, assist: Dict[str, Any]) -> np.ndarray:
+        """Build top portion of outer curve with tcc boundary clamping."""
+        points = assist.get("top")
+        mode = assist.get("mode", "straight")
 
-        pass
+        if points is None:
+            return np.array([], dtype=np.float64).reshape(0, 2)
 
-    def _buildInner(self):
-        pass
+        top = np.asarray(points, dtype=np.float64)
+
+        if mode == "straight":
+            # Straight mode: return all points directly
+            return top.copy()
+
+        elif mode == "superelliptic":
+            superellipse = Superellipse.getInstance()
+            n = assist.get("tnn", 2.0)
+            m = assist.get("tmm", 2.0)
+            superellipse.setExponents(n, m)
+
+            # Generate superellipse curve from top[0] to top[1]
+            # Using top[0] as corner point
+            radius_x = abs(top[0][0])  # horizontal distance
+            radius_y = abs(top[1][1] - top[0][1])  # vertical distance
+
+            curve_points = superellipse.generate(radius_x, radius_y, 0, top[0][1], 0)
+
+            # Convert to numpy array and reverse (skip last point which is the first)
+            curve_arr = np.array(curve_points, dtype=np.float64)
+            return curve_arr[::-1][1:]  # Reverse and skip first (originally last)
+
+        # Fallback
+        return top.copy()
+
+    def _buildTopInner(self, assist: Dict[str, Any]) -> np.ndarray:
+        """Build top portion of outer curve with tcc boundary clamping."""
+        base = self._buildTopOuter(assist)
+        inner = Calculate.Offset(base, -assist.get("spacing", 0.0))
+        # Vectorized x-offset: shift all x-coordinates
+        inner[:, 0] += assist.get("pwidth", 0.0)
+        inner = Calculate.Clamp(inner, assist.get("max_tx", 0.0))
+        # Apply tcc boundary clamping
+        return inner[::-1]
+
+    def _buildBottomOuter(self, assist: Dict[str, Any]) -> np.ndarray:
+        """Build bottom portion of outer curve with bcc boundary clamping."""
+        points = assist.get("bottom")
+        mode = assist.get("mode", "straight")
+
+        if points is None:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
+        bottom = np.asarray(points, dtype=np.float64)
+
+        if mode == "straight":
+            # Straight mode: return all points directly
+            return bottom.copy()
+
+        elif mode == "superelliptic":
+            superellipse = Superellipse.getInstance()
+            n = assist.get("bnn", 2.0)
+            m = assist.get("bmm", 2.0)
+            superellipse.setExponents(n, m)
+
+            # Generate superellipse curve from bottom[0] to bottom[1]
+            # Using bottom[0] as corner point
+            radius_x = abs(bottom[2][0])  # horizontal distance
+            radius_y = abs(bottom[1][1])  # vertical distance
+
+            curve_points = superellipse.generate(radius_x, radius_y, 0, 0, 3)
+
+            # Convert to numpy array and reverse (skip last point which is the first)
+            curve_arr = np.array(curve_points, dtype=np.float64)
+            return curve_arr[::-1][1:]  # Reverse and skip first (originally last)
+
+        # Fallback
+        return bottom.copy()
+
+    def _buildBottomInner(self, assist: Dict[str, Any]) -> np.ndarray:
+        """Build top portion of outer curve with tcc boundary clamping."""
+        base = self._buildBottomOuter(assist)
+        inner = Calculate.Offset(base, -assist.get("spacing", 0.0))
+        # Vectorized x-offset: shift all x-coordinates
+        inner[:, 0] += assist.get("pwidth", 0.0)
+        inner = Calculate.Clamp(inner, assist.get("max_bx", 0.0))
+        # Apply tcc boundary clamping
+        return inner[::-1]
+
+    def _buildTop(self,currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
+        outer = self._buildTopOuter(currentAssist)
+        inner = self._buildTopInner(nextAssist)
+        twist = currentAssist.get("twist", False)
+        if twist:
+            axis_x = currentAssist.get("pwidth", 0.0)/2 + currentAssist.get("spacing", 0.0)/2
+            outer_t = Calculate.Mirror(outer.copy(), axis_x)
+            inner_t = Calculate.Mirror(inner.copy(), axis_x)
+            inner = outer_t[::-1]
+            outer = inner_t[::-1]
+        return (outer, inner)
+
+    def _buildBottom(self,currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
+        outer = self._buildBottomOuter(currentAssist)
+        inner = self._buildBottomInner(nextAssist)
+        return (outer, inner)
 
     def _buildConvexHull(self):
         pass
 
-    def __buildShape(self):
-        params = self.read()
-        pass
+    def __buildShape( self, currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
+        """
+        Build closed shape by combining outer and inner curves.
 
-    def _checkCache(self, params: Dict[str, Any]):
-        pass
+        Steps:
+        1. Get outer curve from current pattern
+        2. Get inner curve from next pattern (with offset)
+        3. Translate inner curve by pattern_ppw in X direction
+        4. If pattern_twist is True, mirror bottom portion of inner curve
+        5. Combine into closed polygon
+
+        Args:
+            currentAssist: Current pattern assist data
+            nextAssist: Next pattern assist data
+
+        Returns:
+            numpy array forming a closed shape
+        """
+        top = self._buildTop(currentAssist, nextAssist)
+        bottom = self._buildBottom(currentAssist, nextAssist)
+        curve = np.vstack([
+            top[0],
+            bottom[0],
+            bottom[1],
+            top[1],
+        ])
+        return curve
 
     def _buildAssist(self, params: Dict[str, Any]):
-        '''
+        """
         psram = {
             "pattern_tp0": 0.0,
             "pattern_tp1": 0.0,
@@ -94,65 +210,131 @@ class Pattern(QWidget):
             "pattern_mode": "straight",
             "pattern_twist": False,
         }
-        '''
+        """
         # counterclockwise
         # line : x1,y1,x2,y2
-        half_width = float(params.get("pattern_pbw", 0.0) or 0.0) / 2.0
-        half_height = float(params.get("pattern_pbh", 0.0) or 0.0) / 2.0
+        width = float(params.get("pattern_pbw", 0.0) or 0.0)
+        height = float(params.get("pattern_pbh", 0.0) or 0.0)
+        mode = params.get("pattern_mode", "straight")
+        pattern_width = float(params.get("pattern_ppw", 0.0) or 0.0)
 
-        top_points = np.array([
-            [half_width,                     float(params.get("pattern_pbh", 0.0) or 0.0)],
-            [float(params.get("pattern_tp1", 0.0) or 0.0), float(params.get("pattern_pbh", 0.0) or 0.0)],
-            [0.0,                            half_height + float(params.get("pattern_tp3", 0.0) or 0.0)],
-            [0.0,                            half_height],
-        ], dtype=np.float64)
+        # Get tp1, bp1 values
+        tp1 = float(params.get("pattern_tp1", 0.0) or 0.0)
+        tp3 = float(params.get("pattern_tp3", 0.0) or 0.0)
+        bp1 = float(params.get("pattern_bp1", 0.0) or 0.0)
+        bp2 = float(params.get("pattern_bp2", 0.0) or 0.0)
 
-        bottom_points = np.array([
-            [0.0,                            half_height],
-            [0.0,                            float(params.get("pattern_bp2", 0.0) or 0.0)],
-            [float(params.get("pattern_bp1", 0.0) or 0.0), 0.0],
-            [half_width,                     0.0],
-        ], dtype=np.float64)
+        tcc = float(params.get("pattern_tcc", width/2.0) or 0.0)
+        bcc = float(params.get("pattern_bcc", width/2.0) or 0.0)
 
-        vertical_center = np.array([
-            [half_width, 0.0],
-            [half_width, float(params.get("pattern_pbh", 0.0) or 0.0)],
-        ], dtype=np.float64)
-        horizontal_center = np.array([
-            [0.0, half_height],
-            [float(params.get("pattern_pbw", 0.0) or 0.0), half_height],
-        ], dtype=np.float64)
+        top_points = None
+        bottom_points = None
+        if mode == "straight":
+            top_points = np.array(
+                [
+                    [tp1,     height],
+                    [tp1 - pattern_width/2,     height],
+                    [0.0,     height/2.0 + tp3],
+                    [0.0,     height/2.0],
+                ],
+                dtype=np.float64,
+            )
+            bottom_points = np.array(
+                [
+                    [0.0, height/2.0],
+                    [0.0, bp2],
+                    [bp1 - pattern_width/2, 0.0],
+                    [bp1, 0.0],
+                ],
+                dtype=np.float64,
+            )
+        else:
+            top_points = np.array(
+                [
+                    [tp1,     height],
+                    [0.0,     height/2.0 + tp3],
+                    [0.0,     height/2.0],
+                ],
+                dtype=np.float64,
+            )
+            bottom_points = np.array(
+                [
+                    [0.0, height/2.0],
+                    [0.0, bp2],
+                    [bp1, 0.0],
+                ],
+                dtype=np.float64,
+            )
+
+        vertical_clamp = np.array(
+            [
+                [pattern_width/2, height],  # top: tcc at y=pbh
+                [pattern_width/2, 0.0],  # bottom: bcc at y=0
+            ],
+            dtype=np.float64,
+        )
+        horizontal_clamp = np.array(
+            [
+                [0.0,   height/2.0],
+                [width, height/2.0],
+            ],
+            dtype=np.float64,
+        )
         return {
             "top": top_points,
             "bottom": bottom_points,
-            "vcenter": vertical_center,
-            "hcenter": horizontal_center,
+            "mode": mode,
+            "twist": params.get("pattern_twist", False),
+            "tnn": float(params.get("pattern_tnn", 2.0) or 2.0),
+            "tmm": float(params.get("pattern_tmm", 2.0) or 2.0),
+            "bnn": float(params.get("pattern_bnn", 2.0) or 2.0),
+            "bmm": float(params.get("pattern_bmm", 2.0) or 2.0),
+            "tcc": tcc,
+            "bcc": bcc,
+            "width": width,
+            "height": height,
+            "pwidth": pattern_width,
+            "max_tx": tp1,
+            "max_bx": bp1,
+            "spacing": float(params.get("pattern_psp", 0.0) or 0.0),
+            "vclamp": vertical_clamp,
+            "hclamp": horizontal_clamp,
         }
 
     def _buildBbox(self, params: Dict[str, Any]):
-        return np.array([
-            [0.0, 0.0],
-            [float(params.get("pattern_pbw", 0.0) or 0.0), 0.0],
-            [float(params.get("pattern_pbw", 0.0) or 0.0), float(params.get("pattern_pbh", 0.0) or 0.0)],
-            [0.0, float(params.get("pattern_pbh", 0.0) or 0.0)],
-        ], dtype=np.float64)
+        return np.array(
+            [
+                [0.0, 0.0],
+                [float(params.get("pattern_pbw", 0.0) or 0.0), 0.0],
+                [
+                    float(params.get("pattern_pbw", 0.0) or 0.0),
+                    float(params.get("pattern_pbh", 0.0) or 0.0),
+                ],
+                [0.0, float(params.get("pattern_pbh", 0.0) or 0.0)],
+            ],
+            dtype=np.float64,
+        )
 
-    def getPattern(self, params: Dict[str, Any]):
+    def getPattern(self, currentParams: Dict[str, Any], nextParams: Dict[str, Any]):
         """
         return {
             "bbox": {},
-            "convex": {},
-            "shape": {},
             "assist": {},
+            "shape": {},
+            "convex": {},
             "info": {}
         }
         """
-        snapshot = params or self.read()
+        currentSnapshot = currentParams or self.read()
+        nextSnapshot = nextParams or self.read()
         return {
-            "bbox": self._buildBbox(snapshot),
-            "assist": self._buildAssist(snapshot),
+            "bbox": self._buildBbox(currentSnapshot),
+            "assist": self._buildAssist(currentSnapshot),
+            "shape": self.__buildShape(
+                self._buildAssist(currentSnapshot), 
+                self._buildAssist(nextSnapshot)
+            ),
         }
-
 
 class PatternCanvas(QWidget):
     """Simple 2D canvas that draws bbox + assist polylines."""
@@ -186,12 +368,18 @@ class PatternCanvas(QWidget):
 
         bbox_pts = self._to_point_list(self._pattern.get("bbox"))
         assist = self._pattern.get("assist") or {}
-        assist_polys = {name: self._to_point_list(poly) for name, poly in assist.items()}
+        assist_polys = {
+            name: self._to_point_list(poly)
+            for name, poly in assist.items()
+            if not isinstance(poly, (str, bool, int, float))
+        }
+        shape_pts = self._to_point_list(self._pattern.get("shape"))
 
         all_points: List[Tuple[float, float]] = []
         all_points.extend(bbox_pts)
         for pts in assist_polys.values():
             all_points.extend(pts)
+        all_points.extend(shape_pts)
 
         if not all_points:
             return
@@ -202,6 +390,7 @@ class PatternCanvas(QWidget):
         mapper = self._build_mapper(bounds)
 
         self._draw_bbox(painter, mapper, bbox_pts)
+        self._draw_shape(painter, mapper, shape_pts)
         self._draw_assist(painter, mapper, assist_polys)
 
     # ------------------------------------------------------------------
@@ -220,14 +409,32 @@ class PatternCanvas(QWidget):
         painter.setPen(outline)
         painter.drawPolygon(polygon)
 
-    def _draw_assist(self, painter: QPainter, mapper, polylines: Dict[str, List[Tuple[float, float]]]):
+    def _draw_shape(self, painter: QPainter, mapper, points: List[Tuple[float, float]]):
+        """Draw the main shape with semi-transparent fill"""
+        if len(points) < 3:
+            return
+
+        polygon = QPolygonF([mapper(pt) for pt in points])
+        fill = QBrush(QColor(255, 140, 0, 100))  # Orange with transparency
+        outline = QPen(QColor(255, 100, 0), 2.0)
+        outline.setCosmetic(True)
+
+        painter.setBrush(fill)
+        painter.setPen(outline)
+        painter.drawPolygon(polygon)
+
+    def _draw_assist(
+        self, painter: QPainter, mapper, polylines: Dict[str, List[Tuple[float, float]]]
+    ):
         painter.setBrush(Qt.NoBrush)
         for idx, (name, pts) in enumerate(polylines.items()):
             if len(pts) < 2:
                 continue
             color = self.ASSIST_COLORS[idx % len(self.ASSIST_COLORS)]
             pen = QPen(color, 0.5)
-            pen.setStyle(Qt.DashLine if name not in ("vcenter", "hcenter") else Qt.SolidLine)
+            pen.setStyle(
+                Qt.DashLine if name not in ("vclamp", "hclamp") else Qt.SolidLine
+            )
             pen.setCosmetic(True)
             painter.setPen(pen)
 
@@ -257,7 +464,9 @@ class PatternCanvas(QWidget):
         span_x = max(max_x - min_x, 1e-6)
         span_y = max(max_y - min_y, 1e-6)
 
-        rect = self.rect().adjusted(self.MARGIN, self.MARGIN, -self.MARGIN, -self.MARGIN)
+        rect = self.rect().adjusted(
+            self.MARGIN, self.MARGIN, -self.MARGIN, -self.MARGIN
+        )
         available_w = max(rect.width(), 1)
         available_h = max(rect.height(), 1)
 
@@ -279,7 +488,10 @@ class PatternCanvas(QWidget):
     def _to_point_list(data) -> List[Tuple[float, float]]:
         if data is None:
             return []
-        arr = np.asarray(data, dtype=np.float64)
+        try:
+            arr = np.asarray(data, dtype=np.float64)
+        except (ValueError, TypeError):
+            return []
         if arr.ndim != 2 or arr.shape[1] < 2:
             return []
         return [(float(x), float(y)) for x, y in arr]
