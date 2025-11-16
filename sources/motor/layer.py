@@ -64,7 +64,7 @@ class Layers(QWidget):
         color: str,
         offset: float = 0.0,
         location: str = "normal",
-        back: bool = False,
+        back: bool = True,
         index: int = 0
 
     ):
@@ -86,13 +86,12 @@ class Layers(QWidget):
                 shape_back = shape.copy()
                 # flip this pattern here
                 shape_back = Calculate.Mirror(shape_back, currentParams.get("pattern_ppw", 0))
-
+                shape_back[:, 0] += offset
                 layers["back"].append({
                     "shape": shape_back,
                     "color": color,
                     "index": index
                 })
-        
 
     def _buildStart(self, layers: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], start_offset: float = 0.0):
         """Build start layer: all patterns use same config except last one transitions to next layer."""
@@ -306,17 +305,17 @@ class LayerCanvas(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), self.palette().window())
 
-        if not self._layers or not self._layers.get("front"):
+        if not self._layers:
             return
 
-        front_shapes = self._layers.get("front", [])
-
-        # Collect all points to compute bounds
+        # Collect all points from both front and back for bounds calculation
         all_points: List[Tuple[float, float]] = []
-        for shape_data in front_shapes:
-            shape = shape_data.get("shape")
-            if shape is not None and len(shape) > 0:
-                all_points.extend([(pt[0], pt[1]) for pt in shape])
+        for layer_name in ["front", "back"]:
+            layer_shapes = self._layers.get(layer_name, [])
+            for shape_data in layer_shapes:
+                shape = shape_data.get("shape")
+                if shape is not None and len(shape) > 0:
+                    all_points.extend([(pt[0], pt[1]) for pt in shape])
 
         if not all_points:
             return
@@ -327,13 +326,32 @@ class LayerCanvas(QWidget):
 
         mapper = self._build_mapper(bounds)
 
-        # Draw all shapes
-        for shape_data in front_shapes:
+        # Draw back layer first (with higher transparency)
+        self._draw_layer(painter, mapper, "back", alpha=50)
+
+        # Draw front layer on top (with normal transparency)
+        self._draw_layer(painter, mapper, "front", alpha=100)
+
+    def _draw_layer(self, painter: QPainter, mapper, layer_name: str, alpha: int = 100):
+        """
+        Draw a specific layer (front or back) with specified alpha transparency.
+
+        Args:
+            painter: QPainter instance
+            mapper: Coordinate mapping function
+            layer_name: Name of the layer ("front" or "back")
+            alpha: Alpha transparency value (0-255, default 100)
+        """
+        layer_shapes = self._layers.get(layer_name, [])
+        if not layer_shapes:
+            return
+
+        for shape_data in layer_shapes:
             shape = shape_data.get("shape")
             color = shape_data.get("color", "#de7cfc")
             if shape is not None and len(shape) > 0:
                 points = [(pt[0], pt[1]) for pt in shape]
-                self._draw_shape(painter, mapper, points, color)
+                self._draw_shape(painter, mapper, points, color, alpha)
 
     def _compute_bounds(self, points: List[Tuple[float, float]]):
         """Compute bounding box of all points."""
@@ -388,17 +406,26 @@ class LayerCanvas(QWidget):
 
         return mapper
 
-    def _draw_shape(self, painter: QPainter, mapper, points: List[Tuple[float, float]], color_str: str):
-        """Draw a single shape with semi-transparent fill."""
+    def _draw_shape(self, painter: QPainter, mapper, points: List[Tuple[float, float]], color_str: str, alpha: int = 100):
+        """
+        Draw a single shape with semi-transparent fill.
+
+        Args:
+            painter: QPainter instance
+            mapper: Coordinate mapping function
+            points: List of (x, y) points
+            color_str: Color string (hex or named color)
+            alpha: Alpha transparency value (0-255, default 100)
+        """
         if len(points) < 3:
             return
 
         polygon = QPolygonF([mapper(pt) for pt in points])
 
-        # Parse color string
+        # Parse color string and apply alpha
         color = QColor(color_str)
-        fill = QBrush(QColor(color.red(), color.green(), color.blue(), 100))
-        outline = QPen(color, 1.5)
+        fill = QBrush(QColor(color.red(), color.green(), color.blue(), alpha))
+        outline = QPen(QColor(color.red(), color.green(), color.blue(), min(255, alpha * 2)), 1.5)
         outline.setCosmetic(True)
 
         painter.setBrush(fill)
