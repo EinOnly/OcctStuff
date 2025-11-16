@@ -171,15 +171,30 @@ class Calculate:
         return result
 
     @classmethod
-    def Mirror(cls, points: np.ndarray, axis_x: float) -> np.ndarray:
+    def Mirror(cls, points: np.ndarray, axis_x: float = None, axis_y: float = None) -> np.ndarray:
         """
-        Mirror points across vertical line x = axis_x.
+        Mirror points across vertical line x = axis_x and/or horizontal line y = axis_y.
+
+        Args:
+            points: Array of points to mirror (shape: n x 2)
+            axis_x: X coordinate of vertical mirror axis (optional)
+            axis_y: Y coordinate of horizontal mirror axis (optional)
+
+        Returns:
+            Mirrored points. If both axes provided, mirrors across both.
 
         For each point, the distance to the axis is preserved but direction is reversed:
-        mirrored_x = axis_x + (axis_x - point_x) = 2 * axis_x - point_x
+        - mirrored_x = 2 * axis_x - point_x (if axis_x provided)
+        - mirrored_y = 2 * axis_y - point_y (if axis_y provided)
         """
         mirrored = points.copy()
-        mirrored[:, 0] = 2 * axis_x - mirrored[:, 0]
+
+        if axis_x is not None:
+            mirrored[:, 0] = 2 * axis_x - mirrored[:, 0]
+
+        if axis_y is not None:
+            mirrored[:, 1] = 2 * axis_y - mirrored[:, 1]
+
         return mirrored
 
     @classmethod

@@ -64,28 +64,32 @@ class Layers(QWidget):
         color: str,
         offset: float = 0.0,
         location: str = "normal",
+        front: bool = True,
         back: bool = True,
-        index: int = 0
-
+        index: int = 0,
+        mirror: bool = False
     ):
         pattern = Pattern.GetPattern(currentParams, nextParams, location)
 
         # Get shape and apply horizontal offset
         shape = pattern.get("shape")
         if shape is not None and len(shape) > 0:
-            shape_offset = shape.copy()
-            shape_offset[:, 0] += offset
+            if front:
+                shape_offset = shape.copy()
+                shape_offset[:, 0] += offset
 
-            layers["front"].append({
-                "shape": shape_offset,
-                "color": color,
-                "index": index
-            })
+                layers["front"].append({
+                    "shape": shape_offset,
+                    "color": color,
+                    "index": index
+                })
             
             if back:
                 shape_back = shape.copy()
                 # flip this pattern here
-                shape_back = Calculate.Mirror(shape_back, currentParams.get("pattern_ppw", 0))
+                mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
+                shape_back = Calculate.Mirror(shape_back, mirror_x, currentParams.get("pattern_pbh", 0)/2)
+
                 shape_back[:, 0] += offset
                 layers["back"].append({
                     "shape": shape_back,
@@ -102,13 +106,15 @@ class Layers(QWidget):
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
         offset = start_offset
-        location = "normal"
 
         currentParams = None
         nextParams = None
-        back = True
 
         for i in range(count):
+            # Reset back to default for each pattern
+            back = True
+            front = True
+            location = "normal"
 
             # Handled the last pattern of each layer separately
             if i == count - 1 and nextConfig is not None:
@@ -126,9 +132,12 @@ class Layers(QWidget):
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
+                back = True
+                if i == 8:
+                    back = False
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, back, i )
+            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front, back, i )
             # Move offset for next pattern
             offset += ppw + psp
 
@@ -143,13 +152,15 @@ class Layers(QWidget):
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
         offset = start_offset
-        location = "normal"
 
         currentParams = None
         nextParams = None
-        back = True
 
         for i in range(count):
+            # Reset back to default for each pattern
+            back = True
+            front = True
+            location = "normal"
 
             # Handled the last pattern of each layer separately
             if i == 0 and preConfig is not None:
@@ -168,7 +179,7 @@ class Layers(QWidget):
                 nextParams = currentParams
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, back, i )
+            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front ,back, i )
             # Move offset for next pattern
             offset += ppw + psp
 
@@ -183,12 +194,16 @@ class Layers(QWidget):
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
         offset = start_offset
-        location = "normal"
 
         currentParams = None
         nextParams = None
 
         for i in range(count):
+            # Reset back to default for each pattern
+            back = True
+            front = True
+            mirror = False
+            location = "normal"
 
             # Handled the last pattern of each layer separately
             if i == 0 and preConfig is not None:
@@ -196,13 +211,19 @@ class Layers(QWidget):
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = preConfig.get("layer", {}).copy()
                 location = "start"
+            elif i > count - 10:
+                currentParams = currentConfig.get("layer", {}).copy()
+                currentParams["pattern_twist"] = False
+                nextParams = currentParams
+                front = False
+                mirror = True
             else:
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, False, i )
+            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front, back, i, mirror )
             # Move offset for next pattern
             offset += ppw + psp
 
@@ -504,20 +525,73 @@ class LayerCanvas(QWidget):
 
     def mouseMoveEvent(self, event):
         """Handle panning while mouse button is held."""
-        if self._is_panning and self._last_mouse_pos is not None:
-            delta = event.pos() - self._last_mouse_pos
-            self._pan_x += delta.x()
-            self._pan_y += delta.y()
-            self._last_mouse_pos = event.pos()
-            self.update()
+        from PyQt5.QtCore import Qt
+
+        if self._is_panning:
+            # Safety check: verify Command key is still held
+            if not (event.modifiers() & Qt.ControlModifier):
+                # Command key released during panning - stop immediately
+                self._stopPanning()
+                return
+
+            # Safety check: verify left button is still pressed
+            if not (event.buttons() & Qt.LeftButton):
+                # Left button released - stop immediately
+                self._stopPanning()
+                return
+
+            if self._last_mouse_pos is not None:
+                delta = event.pos() - self._last_mouse_pos
+                self._pan_x += delta.x()
+                self._pan_y += delta.y()
+                self._last_mouse_pos = event.pos()
+                self.update()
 
     def mouseReleaseEvent(self, event):
         """Stop panning."""
         from PyQt5.QtCore import Qt
-        if event.button() == Qt.LeftButton and self._is_panning:
-            self._is_panning = False
-            self._last_mouse_pos = None
-            self.setCursor(Qt.ArrowCursor)
+        if event.button() == Qt.LeftButton:
+            self._stopPanning()
+
+    def keyPressEvent(self, event):
+        """Handle key press events."""
+        from PyQt5.QtCore import Qt
+        if event.key() == Qt.Key_Escape:
+            # ESC key cancels panning
+            self._stopPanning()
+        else:
+            super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        """Stop panning when focus is lost."""
+        self._stopPanning()
+        super().focusOutEvent(event)
+
+    def leaveEvent(self, event):
+        """Stop panning when mouse leaves the widget."""
+        self._stopPanning()
+        super().leaveEvent(event)
+
+    def enterEvent(self, event):
+        """Ensure clean state when mouse enters the widget."""
+        # Force stop panning if somehow still active
+        if self._is_panning:
+            self._stopPanning()
+        super().enterEvent(event)
+
+    def _stopPanning(self):
+        """Stop panning and reset state - force cleanup even if state is inconsistent."""
+        # Force reset all state, regardless of current _is_panning value
+        was_panning = self._is_panning
+        self._is_panning = False
+        self._last_mouse_pos = None
+
+        # Always reset cursor to ensure it's not stuck
+        self.setCursor(Qt.ArrowCursor)
+
+        # Only update if we were actually panning to avoid unnecessary redraws
+        if was_panning:
+            self.update()
 
     def mouseDoubleClickEvent(self, event):
         """Reset zoom and pan on double click."""
