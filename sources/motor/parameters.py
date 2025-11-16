@@ -6,8 +6,8 @@ from typing import Callable, Optional, Dict, Any, Set, Tuple
 
 from PyQt5.QtCore import QObject, pyqtSignal, Qt
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QGridLayout, QLabel,
-    QSlider, QLineEdit, QComboBox, QGroupBox, QSizePolicy, QCheckBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+    QSlider, QLineEdit, QComboBox, QGroupBox, QSizePolicy, QCheckBox, QPushButton
 )
 
 
@@ -411,7 +411,7 @@ class LParams(QObject):
         }
         self._input: Dict[str, Dict[str, Any]] = {}
         self._combo: Dict[str, QComboBox] = {}
-        self._toggle: Dict[str, QCheckBox] = {}
+        self._toggle: Dict[str, Any] = {}  # Supports QCheckBox and QPushButton
         self._block = False
 
         # listen to PParams to sync mode and pbw/pbh/ppw back
@@ -608,10 +608,19 @@ class LParams(QObject):
         self._push_input_value(key, self._v.get(key, 0))
         line.editingFinished.connect(lambda: self._on_input_finished(key))
 
-    def toggleRegister(self, key: str, checkbox: QCheckBox):
-        self._toggle[key] = checkbox
-        checkbox.setChecked(bool(self._v.get(key, False)))
-        checkbox.stateChanged.connect(lambda state, k=key: self.set(k, bool(state)))
+    def toggleRegister(self, key: str, widget):
+        """Register a toggle widget (QCheckBox or checkable QPushButton)."""
+        self._toggle[key] = widget
+        widget.setChecked(bool(self._v.get(key, False)))
+
+        # Use appropriate signal based on widget type
+        from PyQt5.QtWidgets import QPushButton
+        if isinstance(widget, QPushButton):
+            # QPushButton uses toggled signal (emits bool directly)
+            widget.toggled.connect(lambda checked, k=key: self.set(k, checked))
+        else:
+            # QCheckBox uses stateChanged signal (emits Qt.CheckState)
+            widget.stateChanged.connect(lambda state, k=key: self.set(k, bool(state)))
 
     def _on_input_finished(self, key: str):
         reg = self._input[key]
@@ -806,26 +815,39 @@ class ParametersPanel(QWidget):
 
         self.in_psp = QLineEdit(); self.in_ptc = QLineEdit()
         self.in_ldc = QLineEdit(); self.in_pdc = QLineEdit()
-
         self.in_phw = QLineEdit(); self.in_phb = QLineEdit(); self.in_ppw = QLineEdit()
 
+        # Two inputs per row: use 4 columns (label1, input1, label2, input2)
         g3.addWidget(QLabel("spacing"), 0, 0); g3.addWidget(self.in_psp, 0, 1)
-        g3.addWidget(QLabel("thickness"), 1, 0); g3.addWidget(self.in_ptc, 1, 1)
-        g3.addWidget(QLabel("layer count"), 2, 0); g3.addWidget(self.in_ldc, 2, 1)
-        g3.addWidget(QLabel("pattern count"), 3, 0); g3.addWidget(self.in_pdc, 3, 1)
+        g3.addWidget(QLabel("thickness"), 0, 2); g3.addWidget(self.in_ptc, 0, 3)
 
-        g3.addWidget(QLabel("bbox width"), 4, 0); g3.addWidget(self.in_phw, 4, 1)
-        g3.addWidget(QLabel("bbox height"), 5, 0); g3.addWidget(self.in_phb, 5, 1)
-        g3.addWidget(QLabel("pattern width"), 6, 0); g3.addWidget(self.in_ppw, 6, 1)
+        g3.addWidget(QLabel("layer count"), 1, 0); g3.addWidget(self.in_ldc, 1, 1)
+        g3.addWidget(QLabel("pattern count"), 1, 2); g3.addWidget(self.in_pdc, 1, 3)
+
+        g3.addWidget(QLabel("bbox width"), 2, 0); g3.addWidget(self.in_phw, 2, 1)
+        g3.addWidget(QLabel("bbox height"), 2, 2); g3.addWidget(self.in_phb, 2, 3)
+
+        g3.addWidget(QLabel("pattern width"), 3, 0); g3.addWidget(self.in_ppw, 3, 1)
 
         self.cmb_pmd = QComboBox(); self.cmb_mod = QComboBox(); self.cmb_sel = QComboBox()
-        self.chk_pwt = QCheckBox(); self.chk_psy = QCheckBox()
 
-        g3.addWidget(QLabel("layer select"), 7, 0); g3.addWidget(self.cmb_sel, 7, 1)
-        g3.addWidget(QLabel("pattern mode"), 8, 0); g3.addWidget(self.cmb_pmd, 8, 1)
-        g3.addWidget(QLabel("layer mode"), 9, 0); g3.addWidget(self.cmb_mod, 9, 1)
-        g3.addWidget(QLabel("twist"), 10, 0); g3.addWidget(self.chk_pwt, 10, 1)
-        g3.addWidget(QLabel("symmetry"), 11, 0); g3.addWidget(self.chk_psy, 11, 1)
+        g3.addWidget(QLabel("layer select"), 3, 2); g3.addWidget(self.cmb_sel, 3, 3)
+
+        g3.addWidget(QLabel("pattern mode"), 4, 0); g3.addWidget(self.cmb_pmd, 4, 1)
+        g3.addWidget(QLabel("layer mode"), 4, 2); g3.addWidget(self.cmb_mod, 4, 3)
+
+        # Create toggle buttons instead of checkboxes
+        self.btn_pwt = QPushButton("Twist")
+        self.btn_pwt.setCheckable(True)
+        self.btn_psy = QPushButton("Symmetry")
+        self.btn_psy.setCheckable(True)
+
+        # Create horizontal layout for buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(self.btn_pwt)
+        btn_layout.addWidget(self.btn_psy)
+
+        g3.addWidget(QLabel("toggles"), 5, 0); g3.addLayout(btn_layout, 5, 1, 1, 3)  # Span 3 columns
 
         layout.addWidget(gb_layer)
 
@@ -871,8 +893,8 @@ class ParametersPanel(QWidget):
             self.cmb_sel.setCurrentIndex(initial_idx)
         LPARAMS.comboRegister("layer_pmd", self.cmb_pmd, ["straight", "superelliptic"])
         LPARAMS.comboRegister("layer_mod", self.cmb_mod, ["even", "gradual"])
-        LPARAMS.toggleRegister("layer_pwt", self.chk_pwt)
-        LPARAMS.toggleRegister("layer_psy", self.chk_psy)
+        LPARAMS.toggleRegister("layer_pwt", self.btn_pwt)
+        LPARAMS.toggleRegister("layer_psy", self.btn_psy)
 
         # Tune slider UI to avoid handle clipping
         self._tune_slider_ui([
