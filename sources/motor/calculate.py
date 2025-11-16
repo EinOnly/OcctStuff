@@ -405,3 +405,138 @@ class Calculate:
         resistance = rho * integral
 
         return resistance
+
+    @classmethod
+    def ResistanceAlongPath(cls,
+        curve: np.ndarray,
+        start_idx: int,
+        end_idx: int,
+        thick: float,
+        rho: float = 1.724e-8
+    ) -> float:
+        """
+        Calculate electrical resistance along the pattern boundary.
+
+        The curve is structured as [outer_path, inner_path].  Instead of assuming that
+        index 0 represents opposite sides, we rotate both paths so they start at
+        outer_end_idx (the bottom seam) and walk the two sides simultaneously.
+        Each outer point is paired with an inner point that has the same normalized
+        arc-length progress from the seam, and that pairing defines the local width.
+
+        R = ρ ∫ (1/A(s)) ds where A(s) = w(s) × thick
+
+        Args:
+            curve: Complete closed curve points (n x 2 array, in mm)
+            start_idx: Starting index of conductor path (usually 0)
+            end_idx: Ending index of conductor path (exclusive)
+            thick: Thickness of the conductor (mm), default 0.047 mm
+            rho: Electrical resistivity (Ω·m), default 1.724e-8 Ω·m for copper
+
+        Returns:
+            Resistance in Ohms
+        """
+        if curve is None or len(curve) == 0:
+            return 0.0
+        if start_idx >= end_idx or end_idx > len(curve):
+            return 0.0
+
+        # Extract outer path (conductor path) and inner path
+        outer = np.asarray(curve[start_idx:end_idx], dtype=np.float64)
+        inner = np.asarray(curve[end_idx:], dtype=np.float64)
+
+        if len(outer) < 2 or len(inner) < 2:
+            return 0.0
+
+        # Re-index so both sides start from the bottom seam (outer_end_idx)
+        outer = outer[::-1].copy()  # bottom -> top
+
+        def cumulative_lengths(pts: np.ndarray) -> np.ndarray:
+            if len(pts) < 2:
+                return np.array([0.0], dtype=np.float64)
+            diffs = pts[1:] - pts[:-1]
+            seg_lengths = np.linalg.norm(diffs, axis=1)
+            return np.concatenate(([0.0], np.cumsum(seg_lengths)))
+
+        def sample_point(pts: np.ndarray, cum_lengths: np.ndarray, target: float) -> np.ndarray:
+            """Sample a point along pts given the target arc length."""
+            if target <= 0.0 or len(pts) == 1:
+                return pts[0]
+            total = cum_lengths[-1]
+            if target >= total:
+                return pts[-1]
+            idx = np.searchsorted(cum_lengths, target, side="right") - 1
+            idx = max(0, min(idx, len(pts) - 2))
+            seg_len = cum_lengths[idx + 1] - cum_lengths[idx]
+            if seg_len < 1e-12:
+                return pts[idx]
+            t = (target - cum_lengths[idx]) / seg_len
+            return pts[idx] + t * (pts[idx + 1] - pts[idx])
+
+        outer_cum = cumulative_lengths(outer)
+        inner_cum = cumulative_lengths(inner)
+
+        total_outer = outer_cum[-1]
+        total_inner = inner_cum[-1]
+
+        if total_outer < 1e-9 or total_inner < 1e-9:
+            return 0.0
+
+        # Sample corresponding inner points based on normalized arc-length progress
+        ratios = outer_cum / total_outer
+        inner_samples = np.array(
+            [sample_point(inner, inner_cum, r * total_inner) for r in ratios],
+            dtype=np.float64
+        )
+        width_vectors = inner_samples - outer
+
+        tol = 1e-6
+        segment_data = []
+        valid_widths = []
+
+        for i in range(len(outer) - 1):
+            p1 = outer[i]
+            p2 = outer[i + 1]
+            seg_vec = p2 - p1
+            ds = np.linalg.norm(seg_vec)
+            if ds < tol:
+                continue
+            tangent_dir = seg_vec / ds
+            normal_dir = np.array([-tangent_dir[1], tangent_dir[0]])
+
+            raw_w1 = abs(np.dot(width_vectors[i], normal_dir))
+            raw_w2 = abs(np.dot(width_vectors[i + 1], normal_dir))
+
+            if raw_w1 < tol:
+                raw_w1 = np.linalg.norm(width_vectors[i])
+            if raw_w2 < tol:
+                raw_w2 = np.linalg.norm(width_vectors[i + 1])
+
+            if raw_w1 > tol:
+                valid_widths.append(raw_w1)
+            if raw_w2 > tol:
+                valid_widths.append(raw_w2)
+
+            segment_data.append((ds, raw_w1, raw_w2))
+
+        if not segment_data or not valid_widths:
+            return 0.0
+
+        avg_width = float(np.mean(valid_widths))
+        thick_m = thick * 1e-3
+        integral = 0.0
+
+        for ds, raw_w1, raw_w2 in segment_data:
+            w1 = raw_w1 if raw_w1 > tol else avg_width
+            w2 = raw_w2 if raw_w2 > tol else avg_width
+
+            w1_m = w1 * 1e-3
+            w2_m = w2 * 1e-3
+            ds_m = ds * 1e-3
+
+            A1 = w1_m * thick_m
+            A2 = w2_m * thick_m
+
+            integral += 0.5 * (1.0 / A1 + 1.0 / A2) * ds_m
+
+        resistance = rho * integral
+        return resistance

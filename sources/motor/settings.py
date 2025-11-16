@@ -2,7 +2,7 @@ layers = {
     "global": {
         "layer_psp": 0.05,
         "layer_ptc": 0.047,
-        "layer_pmd": "superelliptic",
+        "layer_pmd": "straight",
         "layer_mod": "even",
     },
     "layers": [

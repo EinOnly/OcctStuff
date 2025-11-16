@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Dict, Any, Iterable, List, Tuple, Optional
 
 # from log import CORELOG
 from parameters import LPARAMS
@@ -8,10 +9,12 @@ from calculate import Calculate
 from PyQt5.QtCore import Qt, QPointF, QCoreApplication
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QGestureRecognizer, QProgressDialog
-from typing import Dict, Any, Iterable, List, Tuple
 
 
 class Layers(QWidget):
+    # Multi-threading disabled by default due to Python GIL limitations
+    USE_MULTITHREADING = True
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -62,6 +65,65 @@ class Layers(QWidget):
 
     def _on_bulk_changed(self, payload: Dict[str, Any]):
         self._needs_regeneration = True
+
+    @staticmethod
+    def _compute_pattern(
+        currentParams: Dict[str, Any],
+        nextParams: Dict[str, Any],
+        color: str,
+        layer_index: int,
+        layer_label: str,
+        offset: float,
+        location: str,
+        front: bool,
+        back: bool,
+        index: int,
+        mirror: bool
+    ) -> Dict[str, Any]:
+        """
+        Compute a single pattern and return the result.
+        This is a static method suitable for parallel execution.
+        """
+        pattern = Pattern.GetPattern(currentParams, nextParams, location)
+        metrics = {
+            "convexhull_area": pattern.get("convexhull_area", 0.0),
+            "pattern_area": pattern.get("pattern_area", 0.0),
+            "pattern_resistance": pattern.get("pattern_resistance", 0.0),
+        }
+
+        result = {"front": None, "back": None}
+        shape = pattern.get("shape")
+
+        if shape is not None and len(shape) > 0:
+            if front:
+                shape_offset = shape.copy()
+                shape_offset[:, 0] += offset
+                result["front"] = {
+                    "shape": shape_offset,
+                    "color": color,
+                    "index": index,
+                    "layer_index": layer_index,
+                    "layer_label": layer_label,
+                    "location": location,
+                    "metrics": metrics,
+                }
+
+            if back:
+                shape_back = shape.copy()
+                mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
+                shape_back = Calculate.Mirror(shape_back, mirror_x, currentParams.get("pattern_pbh", 0)/2)
+                shape_back[:, 0] += offset
+                result["back"] = {
+                    "shape": shape_back,
+                    "color": color,
+                    "index": index,
+                    "layer_index": layer_index,
+                    "layer_label": layer_label,
+                    "location": location,
+                    "metrics": metrics,
+                }
+
+        return result
 
     def _buildPattern(self,
         layers: Dict[str, Any],
@@ -124,6 +186,56 @@ class Layers(QWidget):
             self._progress_dialog.setValue(self._progress_current)
             QCoreApplication.processEvents()  # Allow UI to update
 
+    def _build_patterns_parallel(self, tasks: List[Dict[str, Any]], layers: Dict[str, Any]):
+        """
+        Execute pattern computation tasks (optionally in parallel) and collect results.
+
+        Args:
+            tasks: List of task dictionaries containing all required parameters
+            layers: Dictionary to append results to
+        """
+        if not tasks:
+            return
+
+        if self.USE_MULTITHREADING:
+            # Multi-threaded execution (may be slower due to GIL)
+            from concurrent.futures import ThreadPoolExecutor
+            max_workers = min(2, len(tasks))  # Reduced to 2 workers
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(Layers._compute_pattern, **task) for task in tasks]
+
+                for idx, future in enumerate(futures):
+                    result = future.result()
+
+                    if result["front"] is not None:
+                        layers["front"].append(result["front"])
+                    if result["back"] is not None:
+                        layers["back"].append(result["back"])
+
+                    # Batch progress updates (every 5 patterns)
+                    if self._progress_dialog is not None:
+                        self._progress_current += 1
+                        if idx % 5 == 0 or idx == len(futures) - 1:
+                            self._progress_dialog.setValue(self._progress_current)
+                            QCoreApplication.processEvents()
+        else:
+            # Single-threaded execution (faster for most cases)
+            for idx, task in enumerate(tasks):
+                result = Layers._compute_pattern(**task)
+
+                if result["front"] is not None:
+                    layers["front"].append(result["front"])
+                if result["back"] is not None:
+                    layers["back"].append(result["back"])
+
+                # Update progress every 5 patterns to reduce overhead
+                if self._progress_dialog is not None:
+                    self._progress_current += 1
+                    if idx % 5 == 0 or idx == len(tasks) - 1:
+                        self._progress_dialog.setValue(self._progress_current)
+                        QCoreApplication.processEvents()
+
     def _buildStart(self, layers: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build start layer: all patterns use same config except last one transitions to next layer."""
         layer_params = currentConfig.get("layer", {})
@@ -132,16 +244,18 @@ class Layers(QWidget):
         ppw = layer_params.get("layer_ppw", 0.5)
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
-        offset = start_offset
 
-        currentParams = None
-        nextParams = None
-
+        # Prepare all tasks for parallel execution
+        tasks = []
         for i in range(count):
+            offset = start_offset + i * (ppw + psp)
+
             # Reset back to default for each pattern
             back = True
             front = True
             location = "normal"
+            currentParams = None
+            nextParams = None
 
             # Handled the last pattern of each layer separately
             if i == count - 1 and nextConfig is not None:
@@ -163,24 +277,24 @@ class Layers(QWidget):
                 if i == 8:
                     back = False
 
-            # build pattern here
-            self._buildPattern(
-                layers,
-                currentParams,
-                nextParams,
-                color,
-                layer_index,
-                layer_label,
-                offset,
-                location,
-                front,
-                back,
-                i
-            )
-            # Move offset for next pattern
-            offset += ppw + psp
+            tasks.append({
+                "currentParams": currentParams,
+                "nextParams": nextParams,
+                "color": color,
+                "layer_index": layer_index,
+                "layer_label": layer_label,
+                "offset": offset,
+                "location": location,
+                "front": front,
+                "back": back,
+                "index": i,
+                "mirror": False
+            })
 
-        return offset  # Return final offset for next layer
+        # Execute all patterns in parallel
+        self._build_patterns_parallel(tasks, layers)
+
+        return start_offset + count * (ppw + psp)  # Return final offset for next layer
 
     def _buildNormal(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build normal layer: all patterns transition to next layer."""
@@ -190,20 +304,22 @@ class Layers(QWidget):
         ppw = layer_params.get("layer_ppw", 0.5)
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
-        offset = start_offset
 
-        currentParams = None
-        nextParams = None
-
+        # Prepare all tasks for parallel execution
+        tasks = []
         for i in range(count):
+            offset = start_offset + i * (ppw + psp)
+
             # Reset back to default for each pattern
             back = True
             front = True
             location = "normal"
+            currentParams = None
+            nextParams = None
 
             # Handled the last pattern of each layer separately
             if i == 0 and preConfig is not None:
-                # Last pattern transitions to next layer
+                # First pattern transitions from previous layer
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = preConfig.get("layer", {}).copy()
                 location = "start"
@@ -217,24 +333,24 @@ class Layers(QWidget):
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
 
-            # build pattern here
-            self._buildPattern(
-                layers,
-                currentParams,
-                nextParams,
-                color,
-                layer_index,
-                layer_label,
-                offset,
-                location,
-                front,
-                back,
-                i
-            )
-            # Move offset for next pattern
-            offset += ppw + psp
+            tasks.append({
+                "currentParams": currentParams,
+                "nextParams": nextParams,
+                "color": color,
+                "layer_index": layer_index,
+                "layer_label": layer_label,
+                "offset": offset,
+                "location": location,
+                "front": front,
+                "back": back,
+                "index": i,
+                "mirror": False
+            })
 
-        return offset  # Return final offset for next layer
+        # Execute all patterns in parallel
+        self._build_patterns_parallel(tasks, layers)
+
+        return start_offset + count * (ppw + psp)  # Return final offset for next layer
 
     def _buildEnd(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build end layer: all patterns use same config (no transition)."""
@@ -244,21 +360,23 @@ class Layers(QWidget):
         ppw = layer_params.get("layer_ppw", 0.5)
         psp = layer_params.get("layer_psp", 0.05)
         color = layer_params.get("color", "#de7cfc")
-        offset = start_offset
 
-        currentParams = None
-        nextParams = None
-
+        # Prepare all tasks for parallel execution
+        tasks = []
         for i in range(count):
+            offset = start_offset + i * (ppw + psp)
+
             # Reset back to default for each pattern
             back = True
             front = True
             mirror = False
             location = "normal"
+            currentParams = None
+            nextParams = None
 
             # Handled the last pattern of each layer separately
             if i == 0 and preConfig is not None:
-                # Last pattern transitions to next layer
+                # First pattern transitions from previous layer
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = preConfig.get("layer", {}).copy()
                 location = "start"
@@ -273,25 +391,24 @@ class Layers(QWidget):
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
 
-            # build pattern here
-            self._buildPattern(
-                layers,
-                currentParams,
-                nextParams,
-                color,
-                layer_index,
-                layer_label,
-                offset,
-                location,
-                front,
-                back,
-                i,
-                mirror
-            )
-            # Move offset for next pattern
-            offset += ppw + psp
+            tasks.append({
+                "currentParams": currentParams,
+                "nextParams": nextParams,
+                "color": color,
+                "layer_index": layer_index,
+                "layer_label": layer_label,
+                "offset": offset,
+                "location": location,
+                "front": front,
+                "back": back,
+                "index": i,
+                "mirror": mirror
+            })
 
-        return offset  # Return final offset for next layer
+        # Execute all patterns in parallel
+        self._build_patterns_parallel(tasks, layers)
+
+        return start_offset + count * (ppw + psp)  # Return final offset for next layer
 
     def getLayers(self) -> Dict[str, Any]:
         '''

@@ -40,7 +40,8 @@ class Pattern(QWidget):
         self._params.bulkChanged.connect(self._on_bulk_changed)
 
     def _refresh_pattern(self):
-        self.canvas.setPattern(Pattern.GetPattern(self.read(), self.read(), self.read()))
+        params = self.read()
+        self.canvas.setPattern(Pattern.GetPattern(params, params, "normal"))
 
     # ------------------------------------------------------------------
     # Signal callbacks
@@ -163,7 +164,7 @@ class Pattern(QWidget):
         return (outer, inner)
 
     @staticmethod
-    def _buildConvexHull(currentAssist: Dict[str, Any]) -> np.ndarray:
+    def _buildConvexHull(top_outer: np.ndarray, bottom_outer: np.ndarray, width: float) -> np.ndarray:
         """
         Build convex hull by connecting top/bottom outer curves and mirroring across center line.
 
@@ -173,19 +174,17 @@ class Pattern(QWidget):
         3. Mirroring across center line to create symmetric shape
 
         Args:
-            currentAssist: Current pattern assist data
+            top_outer: Top outer curve points
+            bottom_outer: Bottom outer curve points
+            width: Pattern width for center line calculation
 
         Returns:
             numpy array of convex hull points forming a closed polygon
         """
-        # Get outer curves
-        top_outer = Pattern._buildTopOuter(currentAssist)
-        bottom_outer = Pattern._buildBottomOuter(currentAssist)
 
         if len(top_outer) == 0 or len(bottom_outer) == 0:
             return np.array([], dtype=np.float64).reshape(0, 2)
 
-        width = currentAssist.get("width", 0.0)
         center_x = width / 2.0
 
         # Clip top outer at center line (keep points where x <= center_x)
@@ -241,7 +240,7 @@ class Pattern(QWidget):
         return convex_hull
 
     @staticmethod
-    def _buildShape(currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], location:str = "normal") -> np.ndarray:
+    def _buildShape(currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], location:str = "normal") -> tuple:
         """
         Build closed shape by combining outer and inner curves.
 
@@ -250,14 +249,19 @@ class Pattern(QWidget):
         2. Get inner curve from next pattern (with offset)
         3. Translate inner curve by pattern_ppw in X direction
         4. If pattern_twist is True, mirror bottom portion of inner curve
-        5. Combine into closed polygon
+        5. Combine into closed polygon in counter-clockwise order
 
         Args:
             currentAssist: Current pattern assist data
             nextAssist: Next pattern assist data
+            location: Pattern location ("start", "end", or "normal")
 
         Returns:
-            numpy array forming a closed shape
+            tuple: (curve, outer_end_idx, top, bottom)
+                - curve: Complete closed curve [top_outer, bottom_outer, bottom_inner, top_inner]
+                - outer_end_idx: End index (exclusive) of outer conductor path
+                - top: Tuple of (top_outer, top_inner) curves
+                - bottom: Tuple of (bottom_outer, bottom_inner) curves
         """
         if location == "start":
             top = Pattern._buildTop(currentAssist, nextAssist)
@@ -268,13 +272,17 @@ class Pattern(QWidget):
         else:
             top = Pattern._buildTop(currentAssist, nextAssist)
             bottom = Pattern._buildBottom(currentAssist, nextAssist)
+
+        # Calculate index where outer path ends
+        outer_end_idx = len(top[0]) + len(bottom[0])
+
         curve = np.vstack([
-            top[0],
-            bottom[0],
-            bottom[1],
-            top[1],
+            top[0],      # top_outer: start to outer_end_idx
+            bottom[0],   # bottom_outer
+            bottom[1],   # bottom_inner: from outer_end_idx onwards
+            top[1],      # top_inner
         ])
-        return curve
+        return curve, outer_end_idx, top, bottom
 
     @staticmethod
     def _buildAssist(params: Dict[str, Any]):
@@ -361,8 +369,8 @@ class Pattern(QWidget):
 
         vertical_clamp = np.array(
             [
-                [tp1, height],  # top: tcc at y=pbh
-                [bp1, 0.0],  # bottom: bcc at y=0
+                [width/2, height],  # top: tcc at y=pbh
+                [width/2, 0.0],  # bottom: bcc at y=0
             ],
             dtype=np.float64,
         )
@@ -425,24 +433,16 @@ class Pattern(QWidget):
         current_assist = Pattern._buildAssist(currentParams)
         next_assist = Pattern._buildAssist(nextParams)
 
-        shape = Pattern._buildShape(current_assist, next_assist, location)
-        convexhull = Pattern._buildConvexHull(current_assist)
+        shape, outer_end_idx, top, bottom = Pattern._buildShape(current_assist, next_assist, location)
+        # convexhull = Pattern._buildConvexHull(top[0], bottom[0], current_assist.get("width", 0.0))
+        convexhull = Pattern._buildConvexHull(Calculate.Mirror(bottom[0], None, current_assist.get("height", 0.0)/2)[::-1], bottom[0], current_assist.get("width", 0.0))
 
-        # Calculate resistance from bottom center to top center
+        # Calculate resistance along outer curve (without twist)
         if len(shape) > 0:
-            height = current_assist.get("height", 0.0)
-            width = current_assist.get("width", 0.0)
-
-            # Start point: bottom center of pattern
-            start_pt = np.array([width / 2.0, 0.0])
-            # End point: top center of pattern
-            end_pt = np.array([width / 2.0, height])
-
             # Thickness: 0.047 mm (copper foil standard)
             thickness = 0.047
-
-            # Calculate resistance along the boundary path
-            resistance = Calculate.Resistance(shape, thickness, start_pt, end_pt)
+            # Calculate resistance from index 0 to outer_end_idx
+            resistance = Calculate.ResistanceAlongPath(shape, 0, outer_end_idx, thickness)
         else:
             resistance = 0.0
 
