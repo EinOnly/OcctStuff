@@ -388,11 +388,16 @@ class LParams(QObject):
     def __init__(self, pparams: PParams):
         super().__init__()
         self._p = pparams
+
+        # Load layers configuration from settings
+        self._layers_config = self._load_layers_config()
+
         self._v = {
             "layer_ldc": 1,
             "layer_pdc": 1,
-            "layer_cfg": {},
+            "layer_cfg": self._layers_config,
             "layer_mod": "even",       # even | gradual
+            "layer_sel": 0,            # selected layer index
 
             # new: layer-driven bounding box + per-wave width
             "layer_psp": self._p.get("pattern_psp"),
@@ -412,12 +417,127 @@ class LParams(QObject):
         # listen to PParams to sync mode and pbw/pbh/ppw back
         self._p.changed.connect(self._on_pparams_changed)
 
+        # Apply initial layer (layer 0) to PParams
+        # Note: UI inputs will be updated when they're registered in ParametersPanel
+        self._apply_selected_layer_to_pparams()
+
+    def _load_layers_config(self) -> Dict[str, Any]:
+        """Load layers configuration from settings.py"""
+        try:
+            import settings
+            return settings.layers
+        except Exception:
+            # Fallback to default config
+            return {
+                "global": {
+                    "layer_psp": 0.05,
+                    "layer_ptc": 0.047,
+                    "layer_pmd": "straight",
+                    "layer_mod": "even",
+                },
+                "layers": []
+            }
+
+    def _map_layer_to_pattern_params(self, layer_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Map layer_* parameters to pattern_* parameters for PParams."""
+        pparams_dict = {}
+        for key, value in layer_dict.items():
+            if key.startswith("pattern_"):
+                # Direct pattern parameter
+                pparams_dict[key] = value
+            elif key == "layer_pmd":
+                pparams_dict["pattern_mode"] = value
+            elif key == "layer_pbw":
+                pparams_dict["pattern_pbw"] = value
+            elif key == "layer_pbh":
+                pparams_dict["pattern_pbh"] = value
+            elif key == "layer_ppw":
+                pparams_dict["pattern_ppw"] = value
+            elif key == "layer_psp":
+                pparams_dict["pattern_psp"] = value
+            elif key == "layer_pwt":
+                pparams_dict["pattern_twist"] = value
+            elif key == "layer_psy":
+                pparams_dict["pattern_symmetry"] = value
+        return pparams_dict
+
     def get(self, key, default=None):
         return self._v.get(key, default)
 
     def snapshot(self):
-        """Return a copy of current layer parameters."""
-        return dict(self._v)
+        """
+        Return complete layers configuration with computed PParams for each layer.
+        """
+        layers_cfg = self._v.get("layer_cfg", {})
+        global_params = layers_cfg.get("global", {})
+        layers_list = layers_cfg.get("layers", [])
+
+        result_layers = []
+
+        for idx, layer_def in enumerate(layers_list):
+            layer_type = layer_def.get("type", "normal")
+            layer_params = layer_def.get("layer", {})
+
+            # Merge global + layer-specific params
+            merged = {**global_params, **layer_params}
+
+            # Map layer_* parameters to pattern_* parameters for PParams
+            pparams_dict = self._map_layer_to_pattern_params(merged)
+
+            # Apply to PParams to get computed values
+            temp_snapshot = self._p.snapshot()  # Save current state
+
+            # Update PParams with mapped params
+            if pparams_dict:
+                self._p.update_bulk(pparams_dict, emit=False)
+
+            # Get computed PParams
+            computed_pparams = self._p.snapshot()
+
+            # Restore original PParams state
+            self._p.update_bulk(temp_snapshot, emit=False)
+
+            # Build complete layer entry
+            result_layers.append({
+                "type": layer_type,
+                "index": idx,
+                "layer": {**merged, **computed_pparams}
+            })
+
+        return {
+            "global": global_params,
+            "layers": result_layers
+        }
+
+    def _apply_selected_layer_to_pparams(self):
+        """Apply currently selected layer parameters to PParams and update LParams inputs."""
+        sel_idx = self._v.get("layer_sel", 0)
+        layers_cfg = self._v.get("layer_cfg", {})
+        global_params = layers_cfg.get("global", {})
+        layers_list = layers_cfg.get("layers", [])
+
+        if 0 <= sel_idx < len(layers_list):
+            layer_params = layers_list[sel_idx].get("layer", {})
+            merged = {**global_params, **layer_params}
+
+            # Update LParams values to reflect selected layer (for UI inputs)
+            for key, value in merged.items():
+                if key in self._v and not key.startswith("pattern_"):
+                    self._v[key] = value
+                    # Update UI for this field
+                    if key in self._input:
+                        self._push_input_value(key, value)
+                    elif key in self._combo:
+                        self._push_combo_value(key, value)
+                    elif key in self._toggle:
+                        self._push_toggle_value(key, value)
+
+            # Map layer_* parameters to pattern_* parameters for PParams
+            pparams_dict = self._map_layer_to_pattern_params(merged)
+
+            # Update PParams with mapped params
+            if pparams_dict:
+                self._p.update_bulk(pparams_dict, emit=True)
 
     def set(self, key: str, value: Any, emit=True):
         if self._block:
@@ -426,8 +546,12 @@ class LParams(QObject):
 
         self._v[key] = value
 
+        # Handle layer selection change
+        if key == "layer_sel":
+            self._apply_selected_layer_to_pparams()
+
         # coupling to PParams
-        if key == "layer_pmd":
+        elif key == "layer_pmd":
             self._p.set("pattern_mode", str(value))
         elif key == "layer_pwt":
             self._p.set("pattern_twist", bool(value))
@@ -435,8 +559,6 @@ class LParams(QObject):
             self._p.set("pattern_symmetry", bool(value))
         elif key == "layer_psp":
             self._p.set("pattern_psp", float(value))
-        elif key == "layer_psy":
-            self._p.set("pattern_symmetry", bool(value))
         elif key == "layer_pbw":
             self._p.set("pattern_pbw", float(value))
         elif key == "layer_pbh":
@@ -523,13 +645,23 @@ class LParams(QObject):
         self._push_combo_value(key, self._v.get(key, items[0]))
         combo.currentTextChanged.connect(lambda txt: self.set(key, txt))
 
-    def _push_combo_value(self, key: str, value: str):
+    def _push_combo_value(self, key: str, value: Any):
         c = self._combo[key]
         c.blockSignals(True)
-        idx = c.findText(str(value))
-        if idx < 0:
-            idx = 0
-        c.setCurrentIndex(idx)
+
+        # Special handling for layer_sel which uses integer index
+        if key == "layer_sel" and isinstance(value, int):
+            if 0 <= value < c.count():
+                c.setCurrentIndex(value)
+            else:
+                c.setCurrentIndex(0)
+        else:
+            # Standard text-based lookup for other combos
+            idx = c.findText(str(value))
+            if idx < 0:
+                idx = 0
+            c.setCurrentIndex(idx)
+
         c.blockSignals(False)
 
 
@@ -686,12 +818,14 @@ class ParametersPanel(QWidget):
         g3.addWidget(QLabel("bbox height"), 5, 0); g3.addWidget(self.in_phb, 5, 1)
         g3.addWidget(QLabel("pattern width"), 6, 0); g3.addWidget(self.in_ppw, 6, 1)
 
-        self.cmb_pmd = QComboBox(); self.cmb_mod = QComboBox()
+        self.cmb_pmd = QComboBox(); self.cmb_mod = QComboBox(); self.cmb_sel = QComboBox()
         self.chk_pwt = QCheckBox(); self.chk_psy = QCheckBox()
-        g3.addWidget(QLabel("pattern mode"), 7, 0); g3.addWidget(self.cmb_pmd, 7, 1)
-        g3.addWidget(QLabel("layer mode"), 8, 0); g3.addWidget(self.cmb_mod, 8, 1)
-        g3.addWidget(QLabel("twist"), 9, 0); g3.addWidget(self.chk_pwt, 9, 1)
-        g3.addWidget(QLabel("symmetry"), 10, 0); g3.addWidget(self.chk_psy, 10, 1)
+
+        g3.addWidget(QLabel("layer select"), 7, 0); g3.addWidget(self.cmb_sel, 7, 1)
+        g3.addWidget(QLabel("pattern mode"), 8, 0); g3.addWidget(self.cmb_pmd, 8, 1)
+        g3.addWidget(QLabel("layer mode"), 9, 0); g3.addWidget(self.cmb_mod, 9, 1)
+        g3.addWidget(QLabel("twist"), 10, 0); g3.addWidget(self.chk_pwt, 10, 1)
+        g3.addWidget(QLabel("symmetry"), 11, 0); g3.addWidget(self.chk_psy, 11, 1)
 
         layout.addWidget(gb_layer)
 
@@ -706,7 +840,35 @@ class ParametersPanel(QWidget):
         LPARAMS.inputRegister("layer_pbh", self.in_phb, fmt=lambda x: f"{x:.3f}", parse=lambda s: float(s))
         LPARAMS.inputRegister("layer_ppw", self.in_ppw, fmt=lambda x: f"{x:.3f}", parse=lambda s: float(s))
 
-        # combos
+        # Build layer selection items: "index: type"
+        layers_cfg = LPARAMS.get("layer_cfg", {})
+        layers_list = layers_cfg.get("layers", [])
+        layer_items = [f"{idx}: {layer.get('type', 'normal')}" for idx, layer in enumerate(layers_list)]
+        if not layer_items:
+            layer_items = ["0: default"]
+
+        # combos - special handling for layer_sel to parse index
+        self.cmb_sel.clear()
+        for it in layer_items:
+            self.cmb_sel.addItem(it)
+
+        # Register combo in LPARAMS (but don't use standard comboRegister due to index parsing)
+        LPARAMS._combo["layer_sel"] = self.cmb_sel
+
+        # Connect with custom handler to extract index from "index: type" format
+        def on_layer_sel_changed(txt):
+            try:
+                idx = int(txt.split(":")[0].strip())
+                LPARAMS.set("layer_sel", idx)
+            except Exception:
+                pass
+
+        self.cmb_sel.currentTextChanged.connect(on_layer_sel_changed)
+
+        # Set initial value
+        initial_idx = LPARAMS.get("layer_sel", 0)
+        if 0 <= initial_idx < len(layer_items):
+            self.cmb_sel.setCurrentIndex(initial_idx)
         LPARAMS.comboRegister("layer_pmd", self.cmb_pmd, ["straight", "superelliptic"])
         LPARAMS.comboRegister("layer_mod", self.cmb_mod, ["even", "gradual"])
         LPARAMS.toggleRegister("layer_pwt", self.chk_pwt)
