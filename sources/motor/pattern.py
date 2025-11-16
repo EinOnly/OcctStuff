@@ -40,7 +40,7 @@ class Pattern(QWidget):
         self._params.bulkChanged.connect(self._on_bulk_changed)
 
     def _refresh_pattern(self):
-        self.canvas.setPattern(self.getPattern(self.read(), self.read()))
+        self.canvas.setPattern(Pattern.GetPattern(self.read(), self.read(), self.read()))
 
     # ------------------------------------------------------------------
     # Signal callbacks
@@ -51,10 +51,12 @@ class Pattern(QWidget):
     def _on_bulk_changed(self, payload: Dict[str, Any]):
         self._refresh_pattern()
 
-    def _buildTopOuter(self, assist: Dict[str, Any]) -> np.ndarray:
+    @staticmethod
+    def _buildTopOuter(assist: Dict[str, Any]) -> np.ndarray:
         """Build top portion of outer curve with tcc boundary clamping."""
         points = assist.get("top")
         mode = assist.get("mode", "straight")
+        radius = assist.get("max_tx", 0.0)
 
         if points is None:
             return np.array([], dtype=np.float64).reshape(0, 2)
@@ -72,33 +74,35 @@ class Pattern(QWidget):
             superellipse.setExponents(n, m)
 
             # Generate superellipse curve from top[0] to top[1]
-            # Using top[0] as corner point
-            radius_x = abs(top[0][0])  # horizontal distance
-            radius_y = abs(top[1][1] - top[0][1])  # vertical distance
-
-            curve_points = superellipse.generate(radius_x, radius_y, 0, top[0][1], 0)
+            curve_points = superellipse.generate(radius, radius, 0, top[0][1], 0)
 
             # Convert to numpy array and reverse (skip last point which is the first)
             curve_arr = np.array(curve_points, dtype=np.float64)
-            return curve_arr[::-1][1:]  # Reverse and skip first (originally last)
+            return curve_arr[::-1]  # Reverse and skip first (originally last)
 
         # Fallback
         return top.copy()
 
-    def _buildTopInner(self, assist: Dict[str, Any]) -> np.ndarray:
+    @staticmethod
+    def _buildTopInner(assist: Dict[str, Any]) -> np.ndarray:
         """Build top portion of outer curve with tcc boundary clamping."""
-        base = self._buildTopOuter(assist)
-        inner = Calculate.Offset(base, -assist.get("spacing", 0.0))
+        base = Pattern._buildTopOuter(assist)
+        spacing = assist.get("spacing", 0.0)
+        shift = assist.get("pwidth", 0.0) + spacing
+        clamp = assist.get("max_tx", 0.0) + spacing
+        base[:, 0] += shift
+        inner = Calculate.Offset(base, spacing)
         # Vectorized x-offset: shift all x-coordinates
-        inner[:, 0] += assist.get("pwidth", 0.0)
-        inner = Calculate.Clamp(inner, assist.get("max_tx", 0.0))
+        inner = Calculate.Clamp(inner, clamp)
         # Apply tcc boundary clamping
         return inner[::-1]
 
-    def _buildBottomOuter(self, assist: Dict[str, Any]) -> np.ndarray:
+    @staticmethod
+    def _buildBottomOuter(assist: Dict[str, Any]) -> np.ndarray:
         """Build bottom portion of outer curve with bcc boundary clamping."""
         points = assist.get("bottom")
         mode = assist.get("mode", "straight")
+        radius = assist.get("max_bx", 0.0)
 
         if points is None:
             return np.array([], dtype=np.float64).reshape(0, 2)
@@ -116,11 +120,7 @@ class Pattern(QWidget):
             superellipse.setExponents(n, m)
 
             # Generate superellipse curve from bottom[0] to bottom[1]
-            # Using bottom[0] as corner point
-            radius_x = abs(bottom[2][0])  # horizontal distance
-            radius_y = abs(bottom[1][1])  # vertical distance
-
-            curve_points = superellipse.generate(radius_x, radius_y, 0, 0, 3)
+            curve_points = superellipse.generate(radius, radius, 0, 0, 3)
 
             # Convert to numpy array and reverse (skip last point which is the first)
             curve_arr = np.array(curve_points, dtype=np.float64)
@@ -129,37 +129,44 @@ class Pattern(QWidget):
         # Fallback
         return bottom.copy()
 
-    def _buildBottomInner(self, assist: Dict[str, Any]) -> np.ndarray:
+    @staticmethod
+    def _buildBottomInner(assist: Dict[str, Any]) -> np.ndarray:
         """Build top portion of outer curve with tcc boundary clamping."""
-        base = self._buildBottomOuter(assist)
-        inner = Calculate.Offset(base, -assist.get("spacing", 0.0))
+        base = Pattern._buildBottomOuter(assist)
+        spacing = assist.get("spacing", 0.0)
+        shift = assist.get("pwidth", 0.0) + spacing
+        clamp = assist.get("max_bx", 0.0) + spacing
+        base[:, 0] += shift
+        inner = Calculate.Offset(base, spacing)
         # Vectorized x-offset: shift all x-coordinates
-        inner[:, 0] += assist.get("pwidth", 0.0)
-        inner = Calculate.Clamp(inner, assist.get("max_bx", 0.0))
+        inner = Calculate.Clamp(inner, clamp)
         # Apply tcc boundary clamping
         return inner[::-1]
 
-    def _buildTop(self,currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
-        outer = self._buildTopOuter(currentAssist)
-        inner = self._buildTopInner(nextAssist)
+    @staticmethod
+    def _buildTop(preAssist: Dict[str, Any], currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], ) -> np.ndarray:
+        outer = Pattern._buildTopOuter(currentAssist)
+        inner = Pattern._buildTopInner(nextAssist)
         twist = currentAssist.get("twist", False)
         if twist:
-            axis_x = currentAssist.get("pwidth", 0.0)/2 + currentAssist.get("spacing", 0.0)/2
+            axis_x = currentAssist.get("pwidth", 0.0) / 2
             outer_t = Calculate.Mirror(outer.copy(), axis_x)
             inner_t = Calculate.Mirror(inner.copy(), axis_x)
             inner = outer_t[::-1]
             outer = inner_t[::-1]
         return (outer, inner)
 
-    def _buildBottom(self,currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
-        outer = self._buildBottomOuter(currentAssist)
-        inner = self._buildBottomInner(nextAssist)
+    @staticmethod
+    def _buildBottom(preAssist: Dict[str, Any], currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], ) -> np.ndarray:
+        outer = Pattern._buildBottomOuter(currentAssist)
+        inner = Pattern._buildBottomInner(nextAssist)
         return (outer, inner)
 
     def _buildConvexHull(self):
         pass
 
-    def __buildShape( self, currentAssist: Dict[str, Any], nextAssist: Dict[str, Any]) -> np.ndarray:
+    @staticmethod
+    def _buildShape(preAssist: Dict[str, Any], currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], ) -> np.ndarray:
         """
         Build closed shape by combining outer and inner curves.
 
@@ -177,8 +184,8 @@ class Pattern(QWidget):
         Returns:
             numpy array forming a closed shape
         """
-        top = self._buildTop(currentAssist, nextAssist)
-        bottom = self._buildBottom(currentAssist, nextAssist)
+        top = Pattern._buildTop(preAssist, currentAssist, nextAssist)
+        bottom = Pattern._buildBottom(preAssist, currentAssist, nextAssist)
         curve = np.vstack([
             top[0],
             bottom[0],
@@ -187,7 +194,8 @@ class Pattern(QWidget):
         ])
         return curve
 
-    def _buildAssist(self, params: Dict[str, Any]):
+    @staticmethod
+    def _buildAssist(params: Dict[str, Any], loaction:str = "normal"):
         """
         psram = {
             "pattern_tp0": 0.0,
@@ -211,6 +219,9 @@ class Pattern(QWidget):
             "pattern_twist": False,
         }
         """
+        if params is None:
+            return None
+        
         # counterclockwise
         # line : x1,y1,x2,y2
         width = float(params.get("pattern_pbw", 0.0) or 0.0)
@@ -223,6 +234,9 @@ class Pattern(QWidget):
         tp3 = float(params.get("pattern_tp3", 0.0) or 0.0)
         bp1 = float(params.get("pattern_bp1", 0.0) or 0.0)
         bp2 = float(params.get("pattern_bp2", 0.0) or 0.0)
+
+        if loaction == "start":
+            tp1 += pattern_width
 
         tcc = float(params.get("pattern_tcc", width/2.0) or 0.0)
         bcc = float(params.get("pattern_bcc", width/2.0) or 0.0)
@@ -268,8 +282,8 @@ class Pattern(QWidget):
 
         vertical_clamp = np.array(
             [
-                [pattern_width/2, height],  # top: tcc at y=pbh
-                [pattern_width/2, 0.0],  # bottom: bcc at y=0
+                [tp1, height],  # top: tcc at y=pbh
+                [bp1, 0.0],  # bottom: bcc at y=0
             ],
             dtype=np.float64,
         )
@@ -301,7 +315,8 @@ class Pattern(QWidget):
             "hclamp": horizontal_clamp,
         }
 
-    def _buildBbox(self, params: Dict[str, Any]):
+    @staticmethod
+    def _buildBbox(params: Dict[str, Any]):
         return np.array(
             [
                 [0.0, 0.0],
@@ -315,25 +330,31 @@ class Pattern(QWidget):
             dtype=np.float64,
         )
 
-    def getPattern(self, currentParams: Dict[str, Any], nextParams: Dict[str, Any]):
+    @staticmethod
+    def GetPattern(preParams: Dict[str, Any], currentParams: Dict[str, Any], nextParams: Dict[str, Any], loaction:str = "normal") -> Dict[str, Any]:
         """
         return {
             "bbox": {},
             "assist": {},
             "shape": {},
             "convex": {},
-            "info": {}
         }
         """
-        currentSnapshot = currentParams or self.read()
-        nextSnapshot = nextParams or self.read()
+        if currentParams is None or nextParams is None:
+            raise ValueError("Both currentParams and nextParams are required")
+
         return {
-            "bbox": self._buildBbox(currentSnapshot),
-            "assist": self._buildAssist(currentSnapshot),
-            "shape": self.__buildShape(
-                self._buildAssist(currentSnapshot), 
-                self._buildAssist(nextSnapshot)
+            "bbox": Pattern._buildBbox(currentParams),
+            "assist": Pattern._buildAssist(currentParams),
+            "shape": Pattern._buildShape(
+                Pattern._buildAssist(preParams, loaction),
+                Pattern._buildAssist(currentParams, loaction),
+                Pattern._buildAssist(nextParams, loaction)
             ),
+            "convexhull": [],
+            "convexhull_area": 0.0,
+            "pattern_area": 0.0,
+            "pattern_resistance": 0.0,
         }
 
 class PatternCanvas(QWidget):
