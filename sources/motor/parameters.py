@@ -539,6 +539,20 @@ class LParams(QObject):
             if pparams_dict:
                 self._p.update_bulk(pparams_dict, emit=True)
 
+    def _sync_config_pattern_mode(self, mode: str):
+        """Ensure every layer config entry mirrors the active pattern mode."""
+        layers_cfg = self._v.get("layer_cfg")
+        if not layers_cfg:
+            return
+
+        if isinstance(layers_cfg.get("global"), dict):
+            layers_cfg["global"]["layer_pmd"] = mode
+
+        for layer_entry in layers_cfg.get("layers", []):
+            layer_dict = layer_entry.get("layer") if isinstance(layer_entry, dict) else None
+            if isinstance(layer_dict, dict):
+                layer_dict["layer_pmd"] = mode
+
     def set(self, key: str, value: Any, emit=True):
         if self._block:
             return
@@ -552,7 +566,9 @@ class LParams(QObject):
 
         # coupling to PParams
         elif key == "layer_pmd":
-            self._p.set("pattern_mode", str(value))
+            mode = str(value)
+            self._p.set("pattern_mode", mode)
+            self._sync_config_pattern_mode(mode)
         elif key == "layer_pwt":
             self._p.set("pattern_twist", bool(value))
         elif key == "layer_psy":

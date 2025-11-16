@@ -2,14 +2,14 @@ layers = {
     "global": {
         "layer_psp": 0.05,
         "layer_ptc": 0.047,
-        "layer_pmd": "straight",
+        "layer_pmd": "superelliptic",
         "layer_mod": "even",
     },
     "layers": [
         {
             "type": "start",
             "layer":{
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw":5.9249,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.5495,
@@ -35,7 +35,7 @@ layers = {
         {
             "type": "normal",
             "layer":{
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw":5.76,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.531,
@@ -61,7 +61,7 @@ layers = {
         {
             "type": "normal",
             "layer":{
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw":5.49,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.514,
@@ -87,7 +87,7 @@ layers = {
         {
             "type": "end",
             "layer":{
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw":5.4201,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.497,
