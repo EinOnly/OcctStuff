@@ -3,6 +3,7 @@ from log import CORELOG
 from parameters import ParametersPanel
 from layer import Layers
 from pattern import Pattern
+from step import StepViewer
 
 
 from PyQt5.QtWidgets import (
@@ -63,6 +64,9 @@ class Application(QMainWindow):
         self.occtWidget = self.buildOcct()
         self._addPanelToGrid(grid, self.occtWidget, 2, 1, 1, 2)
 
+        # Connect Layers to OCCT viewer after both are created
+        self._connectWidgets()
+
     def _buildParameters(self):
         pass
 
@@ -80,7 +84,27 @@ class Application(QMainWindow):
         return Layers()
 
     def buildOcct(self):
-        return self._buildPlaceholder("OCCT")
+        return StepViewer()
+
+    def _connectWidgets(self):
+        """Connect widgets together after all are created."""
+        # Connect Layers widget to update OCCT viewer when layers change
+        def on_layers_updated():
+            layers = self.layersWidget.canvas._layers
+            self.occtWidget.setLayers(layers)
+
+        # Monkey-patch the Layers widget to call our update function
+        original_setLayers = self.layersWidget.canvas.setLayers
+
+        def new_setLayers(layers):
+            original_setLayers(layers)
+            on_layers_updated()
+
+        self.layersWidget.canvas.setLayers = new_setLayers
+
+        # Connect Save STEP and Refresh View buttons to OCCT viewer
+        self.paramsWidget.btn_save_step.clicked.connect(self.occtWidget.save_step_file)
+        self.paramsWidget.btn_refresh_view.clicked.connect(self.occtWidget.refresh_view)
 
     def _buildPlaceholder(self, title: str, *, top_padding=None) -> QWidget:
         content = QWidget()

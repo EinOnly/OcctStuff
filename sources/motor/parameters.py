@@ -842,12 +842,19 @@ class ParametersPanel(QWidget):
         self.btn_psy = QPushButton("Symmetry")
         self.btn_psy.setCheckable(True)
 
-        # Create horizontal layout for buttons
+        # Create action buttons (non-checkable)
+        self.btn_save_step = QPushButton("Save STEP")
+        self.btn_refresh_view = QPushButton("Refresh View")
+
+        # Create horizontal layout for all 4 buttons
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(self.btn_pwt)
         btn_layout.addWidget(self.btn_psy)
+        btn_layout.addWidget(self.btn_save_step)
+        btn_layout.addWidget(self.btn_refresh_view)
 
-        g3.addWidget(QLabel("toggles"), 5, 0); g3.addLayout(btn_layout, 5, 1, 1, 3)  # Span 3 columns
+        # Add button layout spanning full width (no label)
+        g3.addLayout(btn_layout, 5, 0, 1, 4)  # Span all 4 columns
 
         layout.addWidget(gb_layer)
 
