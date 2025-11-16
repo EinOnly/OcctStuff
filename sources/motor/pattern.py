@@ -163,8 +163,82 @@ class Pattern(QWidget):
         return (outer, inner)
 
     @staticmethod
-    def _buildConvexHull():
-        pass
+    def _buildConvexHull(currentAssist: Dict[str, Any]) -> np.ndarray:
+        """
+        Build convex hull by connecting top/bottom outer curves and mirroring across center line.
+
+        Creates a symmetric closed polygon by:
+        1. Taking outer curves from top and bottom
+        2. Clipping at center line (width/2)
+        3. Mirroring across center line to create symmetric shape
+
+        Args:
+            currentAssist: Current pattern assist data
+
+        Returns:
+            numpy array of convex hull points forming a closed polygon
+        """
+        # Get outer curves
+        top_outer = Pattern._buildTopOuter(currentAssist)
+        bottom_outer = Pattern._buildBottomOuter(currentAssist)
+
+        if len(top_outer) == 0 or len(bottom_outer) == 0:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
+        width = currentAssist.get("width", 0.0)
+        center_x = width / 2.0
+
+        # Clip top outer at center line (keep points where x <= center_x)
+        top_clipped = []
+        for i in range(len(top_outer)):
+            pt = top_outer[i]
+            if pt[0] <= center_x:
+                top_clipped.append(pt)
+            elif i > 0:
+                # Check if we're transitioning from left to right of center line
+                prev_pt = top_outer[i - 1]
+                if prev_pt[0] <= center_x:
+                    # Linear interpolation to find intersection with center line
+                    t = (center_x - prev_pt[0]) / (pt[0] - prev_pt[0])
+                    y_intersect = prev_pt[1] + t * (pt[1] - prev_pt[1])
+                    top_clipped.append([center_x, y_intersect])
+                    break
+
+        # Clip bottom outer at center line (keep points where x <= center_x)
+        bottom_clipped = []
+        for i in range(len(bottom_outer)):
+            pt = bottom_outer[i]
+            if pt[0] <= center_x:
+                bottom_clipped.append(pt)
+            elif i > 0:
+                # Check if we're transitioning from left to right of center line
+                prev_pt = bottom_outer[i - 1]
+                if prev_pt[0] <= center_x:
+                    # Linear interpolation to find intersection with center line
+                    t = (center_x - prev_pt[0]) / (pt[0] - prev_pt[0])
+                    y_intersect = prev_pt[1] + t * (pt[1] - prev_pt[1])
+                    bottom_clipped.append([center_x, y_intersect])
+                    break
+
+        if not top_clipped or not bottom_clipped:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
+        top_clipped = np.array(top_clipped, dtype=np.float64)
+        bottom_clipped = np.array(bottom_clipped, dtype=np.float64)
+
+        # Mirror across center line to create right side
+        top_mirrored = Calculate.Mirror(top_clipped.copy(), axis_x=center_x)
+        bottom_mirrored = Calculate.Mirror(bottom_clipped.copy(), axis_x=center_x)
+
+        # Build closed convex hull: top_left -> bottom_left -> bottom_right -> top_right
+        convex_hull = np.vstack([
+            top_clipped,           # Left side top
+            bottom_clipped,  # Left side bottom (reversed)
+            bottom_mirrored[::-1],       # Right side bottom
+            top_mirrored[::-1],    # Right side top (reversed)
+        ])
+
+        return convex_hull
 
     @staticmethod
     def _buildShape(currentAssist: Dict[str, Any], nextAssist: Dict[str, Any], location:str = "normal") -> np.ndarray:
@@ -348,18 +422,38 @@ class Pattern(QWidget):
         if currentParams is None or nextParams is None:
             raise ValueError("Both currentParams and nextParams are required")
 
+        current_assist = Pattern._buildAssist(currentParams)
+        next_assist = Pattern._buildAssist(nextParams)
+
+        shape = Pattern._buildShape(current_assist, next_assist, location)
+        convexhull = Pattern._buildConvexHull(current_assist)
+
+        # Calculate resistance from bottom center to top center
+        if len(shape) > 0:
+            height = current_assist.get("height", 0.0)
+            width = current_assist.get("width", 0.0)
+
+            # Start point: bottom center of pattern
+            start_pt = np.array([width / 2.0, 0.0])
+            # End point: top center of pattern
+            end_pt = np.array([width / 2.0, height])
+
+            # Thickness: 0.047 mm (copper foil standard)
+            thickness = 0.047
+
+            # Calculate resistance along the boundary path
+            resistance = Calculate.Resistance(shape, thickness, start_pt, end_pt)
+        else:
+            resistance = 0.0
+
         return {
             "bbox": Pattern._buildBbox(currentParams),
-            "assist": Pattern._buildAssist(currentParams),
-            "shape": Pattern._buildShape(
-                Pattern._buildAssist(currentParams),
-                Pattern._buildAssist(nextParams),
-                location
-            ),
-            "convexhull": [],
-            "convexhull_area": 0.0,
-            "pattern_area": 0.0,
-            "pattern_resistance": 0.0,
+            "assist": current_assist,
+            "shape": shape,
+            "convexhull": convexhull,
+            "convexhull_area": Calculate.AreaOfClosedPolygon(convexhull),
+            "pattern_area": Calculate.AreaOfClosedPolygon(shape),
+            "pattern_resistance": resistance,
         }
 
 class PatternCanvas(QWidget):
@@ -400,12 +494,14 @@ class PatternCanvas(QWidget):
             if not isinstance(poly, (str, bool, int, float))
         }
         shape_pts = self._to_point_list(self._pattern.get("shape"))
+        convexhull_pts = self._to_point_list(self._pattern.get("convexhull"))
 
         all_points: List[Tuple[float, float]] = []
         all_points.extend(bbox_pts)
         for pts in assist_polys.values():
             all_points.extend(pts)
         all_points.extend(shape_pts)
+        all_points.extend(convexhull_pts)
 
         if not all_points:
             return
@@ -416,6 +512,7 @@ class PatternCanvas(QWidget):
         mapper = self._build_mapper(bounds)
 
         self._draw_bbox(painter, mapper, bbox_pts)
+        self._draw_convexhull(painter, mapper, convexhull_pts)
         self._draw_shape(painter, mapper, shape_pts)
         self._draw_assist(painter, mapper, assist_polys)
 
@@ -430,6 +527,22 @@ class PatternCanvas(QWidget):
         fill = QBrush(QColor(74, 144, 226, 60))
         outline = QPen(QColor(74, 144, 226), 1.4)
         outline.setCosmetic(True)
+
+        painter.setBrush(fill)
+        painter.setPen(outline)
+        painter.drawPolygon(polygon)
+
+    def _draw_convexhull(self, painter: QPainter, mapper, points: List[Tuple[float, float]]):
+        """Draw the convex hull with distinct styling."""
+        if len(points) < 3:
+            return
+
+        polygon = QPolygonF([mapper(pt) for pt in points])
+        # Green with transparency for convex hull
+        fill = QBrush(QColor(76, 175, 80, 40))  # Light green fill
+        outline = QPen(QColor(56, 142, 60), 2.0)  # Darker green outline
+        outline.setCosmetic(True)
+        outline.setStyle(Qt.DashLine)  # Dashed line for distinction
 
         painter.setBrush(fill)
         painter.setPen(outline)
