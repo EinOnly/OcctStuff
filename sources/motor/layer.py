@@ -1,13 +1,13 @@
 import numpy as np
 
-from log import CORELOG
+# from log import CORELOG
 from parameters import LPARAMS
 from pattern import Pattern
 from calculate import Calculate
 
-from PyQt5.QtCore import Qt, QPointF
+from PyQt5.QtCore import Qt, QPointF, QCoreApplication
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QGestureRecognizer
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QGestureRecognizer, QProgressDialog
 from typing import Dict, Any, Iterable, List, Tuple
 
 
@@ -17,6 +17,9 @@ class Layers(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._params = LPARAMS
         self._layerConfig = {}
+        self._progress_dialog = None
+        self._progress_current = 0
+        self._progress_total = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -24,11 +27,9 @@ class Layers(QWidget):
         self.canvas = LayerCanvas()
         layout.addWidget(self.canvas)
 
+        self._needs_regeneration = True
         self.register()
-        self._refresh_layers()
-
-
-        CORELOG.info(f"Layers initialized.")
+        # CORELOG.info(f"Layers initialized.")
 
     # ------------------------------------------------------------------
     # Data plumbing
@@ -43,25 +44,32 @@ class Layers(QWidget):
         self._params.changed.connect(self._on_param_changed)
         self._params.bulkChanged.connect(self._on_bulk_changed)
 
+    def generate_layers(self):
+        """Public entry for manual generation triggered by UI button."""
+        self._refresh_layers()
+
     def _refresh_layers(self):
         # import pprint
         # pprint.pprint(self._params.snapshot())
         self.canvas.setLayers(self.getLayers())
+        self._needs_regeneration = False
 
     # ------------------------------------------------------------------
     # Signal callbacks
     # ------------------------------------------------------------------
     def _on_param_changed(self, key: str, value: Any):
-        self._refresh_layers()
+        self._needs_regeneration = True
 
     def _on_bulk_changed(self, payload: Dict[str, Any]):
-        self._refresh_layers()
+        self._needs_regeneration = True
 
     def _buildPattern(self,
-        layers: Dict[str, Any], 
-        currentParams: Dict[str, Any], 
-        nextParams: Dict[str, Any], 
+        layers: Dict[str, Any],
+        currentParams: Dict[str, Any],
+        nextParams: Dict[str, Any],
         color: str,
+        layer_index: int,
+        layer_label: str,
         offset: float = 0.0,
         location: str = "normal",
         front: bool = True,
@@ -70,6 +78,11 @@ class Layers(QWidget):
         mirror: bool = False
     ):
         pattern = Pattern.GetPattern(currentParams, nextParams, location)
+        metrics = {
+            "convexhull_area": pattern.get("convexhull_area", 0.0),
+            "pattern_area": pattern.get("pattern_area", 0.0),
+            "pattern_resistance": pattern.get("pattern_resistance", 0.0),
+        }
 
         # Get shape and apply horizontal offset
         shape = pattern.get("shape")
@@ -81,9 +94,13 @@ class Layers(QWidget):
                 layers["front"].append({
                     "shape": shape_offset,
                     "color": color,
-                    "index": index
+                    "index": index,
+                    "layer_index": layer_index,
+                    "layer_label": layer_label,
+                    "location": location,
+                    "metrics": metrics,
                 })
-            
+
             if back:
                 shape_back = shape.copy()
                 # flip this pattern here
@@ -94,10 +111,20 @@ class Layers(QWidget):
                 layers["back"].append({
                     "shape": shape_back,
                     "color": color,
-                    "index": index
+                    "index": index,
+                    "layer_index": layer_index,
+                    "layer_label": layer_label,
+                    "location": location,
+                    "metrics": metrics,
                 })
 
-    def _buildStart(self, layers: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], start_offset: float = 0.0):
+        # Update progress if dialog exists
+        if self._progress_dialog is not None:
+            self._progress_current += 1
+            self._progress_dialog.setValue(self._progress_current)
+            QCoreApplication.processEvents()  # Allow UI to update
+
+    def _buildStart(self, layers: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build start layer: all patterns use same config except last one transitions to next layer."""
         layer_params = currentConfig.get("layer", {})
         count = layer_params.get("layer_pdc", 9)
@@ -137,13 +164,25 @@ class Layers(QWidget):
                     back = False
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front, back, i )
+            self._buildPattern(
+                layers,
+                currentParams,
+                nextParams,
+                color,
+                layer_index,
+                layer_label,
+                offset,
+                location,
+                front,
+                back,
+                i
+            )
             # Move offset for next pattern
             offset += ppw + psp
 
         return offset  # Return final offset for next layer
 
-    def _buildNormal(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], start_offset: float = 0.0):
+    def _buildNormal(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], nextConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build normal layer: all patterns transition to next layer."""
         layer_params = currentConfig.get("layer", {})
         count = layer_params.get("layer_pdc", 9)
@@ -179,13 +218,25 @@ class Layers(QWidget):
                 nextParams = currentParams
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front ,back, i )
+            self._buildPattern(
+                layers,
+                currentParams,
+                nextParams,
+                color,
+                layer_index,
+                layer_label,
+                offset,
+                location,
+                front,
+                back,
+                i
+            )
             # Move offset for next pattern
             offset += ppw + psp
 
         return offset  # Return final offset for next layer
 
-    def _buildEnd(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], start_offset: float = 0.0):
+    def _buildEnd(self, layers: Dict[str, Any], preConfig: Dict[str, Any], currentConfig: Dict[str, Any], layer_index: int, layer_label: str, start_offset: float = 0.0):
         """Build end layer: all patterns use same config (no transition)."""
         layer_params = currentConfig.get("layer", {})
         count = layer_params.get("layer_pdc", 9)
@@ -223,7 +274,20 @@ class Layers(QWidget):
                 nextParams = currentParams
 
             # build pattern here
-            self._buildPattern( layers, currentParams, nextParams, color, offset, location, front, back, i, mirror )
+            self._buildPattern(
+                layers,
+                currentParams,
+                nextParams,
+                color,
+                layer_index,
+                layer_label,
+                offset,
+                location,
+                front,
+                back,
+                i,
+                mirror
+            )
             # Move offset for next pattern
             offset += ppw + psp
 
@@ -248,45 +312,89 @@ class Layers(QWidget):
         '''
         layers = { "front": [], "back": []}
         configs = self._params.snapshot().get("layers", [])
+
+        # Calculate total number of patterns for progress tracking
+        total_patterns = 0
+        for config in configs:
+            layer_params = config.get("layer", {})
+            total_patterns += layer_params.get("layer_pdc", 9)
+
+        # Create progress dialog
+        if total_patterns > 0:
+            self._progress_dialog = QProgressDialog(
+                "Generating layers...",
+                "Cancel",
+                0,
+                total_patterns,
+                self
+            )
+            self._progress_dialog.setWindowModality(Qt.WindowModal)
+            self._progress_dialog.setMinimumDuration(0)  # Show immediately
+            self._progress_current = 0
+            self._progress_total = total_patterns
+
         cumulative_offset = 0.0
 
-        for idx, currentLayerConfig in enumerate(configs):
-            layer_type = currentLayerConfig.get("type", "normal")
-            nexLayerConfig = configs[idx + 1] if idx + 1 < len(configs) else None
-            preLayerConfig = configs[idx - 1] if idx - 1 >= 0 else None
+        try:
+            for idx, currentLayerConfig in enumerate(configs):
+                # Check if user cancelled
+                if self._progress_dialog and self._progress_dialog.wasCanceled():
+                    break
 
-            match layer_type:
-                case "start":
-                    CORELOG.info(f"Building start layer at index {idx}")
-                    cumulative_offset = self._buildStart(
-                        layers, 
-                        currentLayerConfig,
-                        nexLayerConfig,
-                        cumulative_offset
-                    )
-                    CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
-                case "normal":
-                    CORELOG.info(f"Building normal layer at index {idx}")
-                    cumulative_offset = self._buildNormal(
-                        layers, 
-                        preLayerConfig,
-                        currentLayerConfig, 
-                        nexLayerConfig, 
-                        cumulative_offset
-                    )
-                    CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
-                case "end":
-                    CORELOG.info(f"Building end layer at index {idx}")
-                    cumulative_offset = self._buildEnd(
-                        layers, 
-                        preLayerConfig,
-                        currentLayerConfig, 
-                        cumulative_offset
-                    )
-                    CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
-                case _:
-                    CORELOG.warn(f"Unknown layer type: {layer_type} at index {idx}")
-                    continue
+                layer_type = currentLayerConfig.get("type", "normal")
+                layer_index = currentLayerConfig.get("index", idx)
+                layer_label = currentLayerConfig.get("label") or f"Layer {layer_index + 1} ({layer_type})"
+                nexLayerConfig = configs[idx + 1] if idx + 1 < len(configs) else None
+                preLayerConfig = configs[idx - 1] if idx - 1 >= 0 else None
+
+                # Update progress label
+                if self._progress_dialog:
+                    self._progress_dialog.setLabelText(f"Generating {layer_label}...")
+
+                match layer_type:
+                    case "start":
+                        # CORELOG.info(f"Building start layer at index {idx}")
+                        cumulative_offset = self._buildStart(
+                            layers,
+                            currentLayerConfig,
+                            nexLayerConfig,
+                            layer_index,
+                            layer_label,
+                            cumulative_offset
+                        )
+                        # CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
+                    case "normal":
+                        # CORELOG.info(f"Building normal layer at index {idx}")
+                        cumulative_offset = self._buildNormal(
+                            layers,
+                            preLayerConfig,
+                            currentLayerConfig,
+                            nexLayerConfig,
+                            layer_index,
+                            layer_label,
+                            cumulative_offset
+                        )
+                        # CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
+                    case "end":
+                        # CORELOG.info(f"Building end layer at index {idx}")
+                        cumulative_offset = self._buildEnd(
+                            layers,
+                            preLayerConfig,
+                            currentLayerConfig,
+                            layer_index,
+                            layer_label,
+                            cumulative_offset
+                        )
+                        # CORELOG.info(f"Built layer at index {idx} successfully, offset: {cumulative_offset}")
+                    case _:
+                        # CORELOG.warn(f"Unknown layer type: {layer_type} at index {idx}")
+                        continue
+        finally:
+            # Clean up progress dialog
+            if self._progress_dialog:
+                self._progress_dialog.close()
+                self._progress_dialog = None
+
         return layers
 
 class LayerCanvas(QWidget):
@@ -327,6 +435,8 @@ class LayerCanvas(QWidget):
         painter.fillRect(self.rect(), self.palette().window())
 
         if not self._layers:
+            painter.setPen(Qt.gray)
+            painter.drawText(self.rect(), Qt.AlignCenter, "Click 'Generate Layers' to render.")
             return
 
         # Collect all points from both front and back for bounds calculation
@@ -339,6 +449,8 @@ class LayerCanvas(QWidget):
                     all_points.extend([(pt[0], pt[1]) for pt in shape])
 
         if not all_points:
+            painter.setPen(Qt.gray)
+            painter.drawText(self.rect(), Qt.AlignCenter, "No layer geometry generated yet.")
             return
 
         bounds = self._compute_bounds(all_points)

@@ -8,9 +8,9 @@ import os
 # PyQt5 imports
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QFileDialog, QMessageBox, QSizePolicy
+    QFileDialog, QMessageBox, QSizePolicy, QProgressDialog
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QCoreApplication
 
 # OpenCASCADE imports
 from OCC.Core.gp import gp_Pnt, gp_Vec
@@ -200,30 +200,66 @@ class StepViewer(QWidget):
 
     def setLayers(self, layers: Dict[str, Any]):
         """
-        Update the 3D view with new layer data.
+        Store layer data without immediately building 3D shapes.
+        Call refresh_view() separately to generate and display shapes.
 
         Args:
             layers: Dictionary containing 'front' and 'back' layer shapes
         """
         self.layers_data = layers
-        self.refresh_view()
 
     def refresh_view(self):
         """Rebuild the 3D view from current layer data."""
         if not self.layers_data:
             return
 
+        # Calculate total shapes for progress tracking
+        total_shapes = len(self.layers_data.get("front", [])) + len(self.layers_data.get("back", []))
+
+        # Create progress dialog
+        progress = None
+        if total_shapes > 0:
+            progress = QProgressDialog(
+                "Building 3D shapes...",
+                "Cancel",
+                0,
+                total_shapes + 2,  # +2 for compound creation and display update
+                self
+            )
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)  # Show after 500ms if still processing
+
         try:
             # Clear previous display
+            if progress:
+                progress.setLabelText("Clearing previous view...")
+                progress.setValue(0)
+                QCoreApplication.processEvents()
+
             self.viewer._display.Context.RemoveAll(True)
 
             # Create compound from layers
+            if progress:
+                progress.setLabelText("Creating 3D shapes from layers...")
+                progress.setValue(1)
+                QCoreApplication.processEvents()
+
             self.current_compound = self.exporter.create_compound_from_layers(self.layers_data)
 
             # Display each shape with its color
+            current_shape_idx = 2
             for shape_info in self.exporter.current_shapes:
+                if progress and progress.wasCanceled():
+                    break
+
                 shape = shape_info["shape"]
                 color_str = shape_info["color"]
+                layer_name = shape_info["layer"]
+
+                if progress:
+                    progress.setLabelText(f"Displaying {layer_name} layer shapes...")
+                    progress.setValue(current_shape_idx)
+                    QCoreApplication.processEvents()
 
                 # Parse hex color
                 color_str = color_str.lstrip('#')
@@ -236,11 +272,18 @@ class StepViewer(QWidget):
                 ais_shape = self.viewer._display.DisplayShape(
                     shape,
                     color=color,
-                    transparency=0.3 if shape_info["layer"] == "back" else 0.1,
+                    transparency=0.3 if layer_name == "back" else 0.1,
                     update=False
                 )
 
+                current_shape_idx += 1
+
             # Fit all and update
+            if progress:
+                progress.setLabelText("Finalizing view...")
+                progress.setValue(total_shapes + 2)
+                QCoreApplication.processEvents()
+
             self.viewer._display.FitAll()
             self.viewer._display.Repaint()
 
@@ -248,6 +291,10 @@ class StepViewer(QWidget):
             print(f"Error rebuilding view: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            # Clean up progress dialog
+            if progress:
+                progress.close()
 
     def save_step_file(self):
         """Save the current shapes to a STEP file."""

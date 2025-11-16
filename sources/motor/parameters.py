@@ -845,6 +845,7 @@ class ParametersPanel(QWidget):
         # Create action buttons (non-checkable)
         self.btn_save_step = QPushButton("Save STEP")
         self.btn_refresh_view = QPushButton("Refresh View")
+        self.btn_generate_layers = QPushButton("Generate Layers")
 
         # Create horizontal layout for all 4 buttons
         btn_layout = QHBoxLayout()
@@ -852,6 +853,7 @@ class ParametersPanel(QWidget):
         btn_layout.addWidget(self.btn_psy)
         btn_layout.addWidget(self.btn_save_step)
         btn_layout.addWidget(self.btn_refresh_view)
+        btn_layout.addWidget(self.btn_generate_layers)
 
         # Add button layout spanning full width (no label)
         g3.addLayout(btn_layout, 5, 0, 1, 4)  # Span all 4 columns

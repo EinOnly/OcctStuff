@@ -299,7 +299,7 @@ class Calculate:
         def find_width_at_segment(pos: np.ndarray, tangent_dir: np.ndarray) -> float:
             """
             Find perpendicular width at position pos with given tangent direction.
-            Returns width in mm.
+            Returns width in mm, or None if invalid.
             """
             # Perpendicular direction (left normal)
             perp_dir = np.array([-tangent_dir[1], tangent_dir[0]])
@@ -326,16 +326,44 @@ class Calculate:
                     intersections.append(s)
 
             if len(intersections) < 2:
-                return 1e-6
+                return None  # Invalid width
 
             intersections = np.array(intersections)
             width = abs(np.max(intersections) - np.min(intersections))
-            return max(width, 1e-6)
+
+            # Return None for unreasonably small widths (< 0.01mm)
+            return width if width >= 0.01 else None
 
         # Integrate along boundary path
         thick_m = thick * 1e-3
         integral = 0.0
+        valid_segments = 0
+        total_segments = 0
 
+        # First pass: collect valid widths to compute average
+        valid_widths = []
+        for i in range(len(boundary_path) - 1):
+            p1 = boundary_path[i]
+            p2 = boundary_path[i + 1]
+            seg_vec = p2 - p1
+            ds = np.linalg.norm(seg_vec)
+            if ds < 1e-12:
+                continue
+            tangent_dir = seg_vec / ds
+            w1 = find_width_at_segment(p1, tangent_dir)
+            w2 = find_width_at_segment(p2, tangent_dir)
+            if w1 is not None:
+                valid_widths.append(w1)
+            if w2 is not None:
+                valid_widths.append(w2)
+
+        if not valid_widths:
+            return 0.0  # No valid widths found
+
+        # Compute average width for fallback
+        avg_width = np.mean(valid_widths)
+
+        # Second pass: integrate using valid or average widths
         for i in range(len(boundary_path) - 1):
             p1 = boundary_path[i]
             p2 = boundary_path[i + 1]
@@ -347,12 +375,18 @@ class Calculate:
             if ds < 1e-12:
                 continue
 
+            total_segments += 1
+
             # Tangent direction
             tangent_dir = seg_vec / ds
 
             # Widths at both ends of segment
             w1 = find_width_at_segment(p1, tangent_dir)
             w2 = find_width_at_segment(p2, tangent_dir)
+
+            # Use average width if individual width is invalid
+            w1 = w1 if w1 is not None else avg_width
+            w2 = w2 if w2 is not None else avg_width
 
             # Convert to meters
             w1_m = w1 * 1e-3
@@ -365,6 +399,7 @@ class Calculate:
 
             # Trapezoidal integration: ∫(1/A) ds
             integral += 0.5 * (1.0 / A1 + 1.0 / A2) * ds_m
+            valid_segments += 1
 
         # Calculate resistance: R = ρ * integral
         resistance = rho * integral

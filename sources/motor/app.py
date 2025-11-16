@@ -1,8 +1,9 @@
-from log import CORELOG
+# from log import CORELOG
 
 from parameters import ParametersPanel
 from layer import Layers
 from pattern import Pattern
+from plot import Plot
 from step import StepViewer
 
 
@@ -21,7 +22,7 @@ class Application(QMainWindow):
     PANEL_PADDING = 10
 
     def __init__(self, parent=None) -> None:
-        CORELOG.info("Initializing Application")
+        # CORELOG.info("Initializing Application")
         super().__init__(parent)
 
         self.layers = []
@@ -55,8 +56,11 @@ class Application(QMainWindow):
         self.patternWidget = self.buildPattern()
         self._addPanelToGrid(grid, self.patternWidget, 0, 1, top_margin=30)
 
-        self.matplotWidget = self.buileMatplot()
-        self._addPanelToGrid(grid, self.matplotWidget, 0, 2, top_margin=30)
+        self.plotWidget = self.buildPlot()
+        self._addPanelToGrid(grid, self.plotWidget, 0, 2, top_margin=30)
+
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 2)
 
         self.layersWidget = self.buildLayers()
         self._addPanelToGrid(grid, self.layersWidget, 1, 1, 1, 2)
@@ -77,8 +81,8 @@ class Application(QMainWindow):
     def buildPattern(self):
         return Pattern()
 
-    def buileMatplot(self):
-        return self._buildPlaceholder("Matplot")
+    def buildPlot(self):
+        return Plot()
 
     def buildLayers(self):
         return Layers()
@@ -92,6 +96,7 @@ class Application(QMainWindow):
         def on_layers_updated():
             layers = self.layersWidget.canvas._layers
             self.occtWidget.setLayers(layers)
+            self.plotWidget.setLayers(layers)
 
         # Monkey-patch the Layers widget to call our update function
         original_setLayers = self.layersWidget.canvas.setLayers
@@ -105,6 +110,7 @@ class Application(QMainWindow):
         # Connect Save STEP and Refresh View buttons to OCCT viewer
         self.paramsWidget.btn_save_step.clicked.connect(self.occtWidget.save_step_file)
         self.paramsWidget.btn_refresh_view.clicked.connect(self.occtWidget.refresh_view)
+        self.paramsWidget.btn_generate_layers.clicked.connect(self.layersWidget.generate_layers)
 
     def _buildPlaceholder(self, title: str, *, top_padding=None) -> QWidget:
         content = QWidget()
@@ -169,7 +175,7 @@ class Application(QMainWindow):
         pass
     
     def render(self):
-        CORELOG.info("Main loop rendering.")
+        # CORELOG.info("Main loop rendering.")
         super().show()
         pass
     
