@@ -26,7 +26,7 @@ class Application(QMainWindow):
 
         self.layers = []
         self._buildLayout()
-        self.resize(1400, 800)
+        self.resize(1400, 700)
 
     def _buildLayout(self):
         central = QWidget()
