@@ -190,12 +190,25 @@ class PlotCanvas(QWidget):
         painter.drawLine(QPointF(right_axis_x, plot_rect.bottom()),
                         QPointF(right_axis_x, plot_rect.top()))
 
-        # Horizontal guide lines
+        # Horizontal guide lines with y-axis labels
         guide_pen = QPen(QColor("#cccccc"), 1, Qt.DashLine)
         painter.setPen(guide_pen)
-        for frac in (0.25, 0.5, 0.75):
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
             y = plot_rect.bottom() - frac * plot_rect.height()
-            painter.drawLine(QPointF(plot_rect.left(), y), QPointF(plot_rect.right(), y))
+            if frac > 0 and frac < 1.0:
+                painter.drawLine(QPointF(plot_rect.left(), y), QPointF(plot_rect.right(), y))
+
+            # Left y-axis labels (areas) - in cyan color
+            if valid_left:
+                left_value = min_left + frac * span_left
+                painter.setPen(QPen(QColor("#4ecdc4")))
+                painter.drawText(QPointF(plot_rect.left() - self.MARGIN + 2, y + 4), f"{left_value:.1f}")
+
+            # Right y-axis labels (resistance) - in red color
+            if valid_right:
+                right_value = min_right + frac * span_right
+                painter.setPen(QPen(QColor("#ff6b6b")))
+                painter.drawText(QPointF(plot_rect.right() + 4, y + 4), f"{right_value:.1f}")
 
         # Layer separators
         if total_points > 1:
@@ -228,12 +241,12 @@ class PlotCanvas(QWidget):
             painter.setBrush(Qt.NoBrush)
 
             if len(series) == 1:
-                painter.drawEllipse(series[0], 3, 3)
+                painter.drawEllipse(series[0], 2, 2)
             else:
                 painter.drawPolyline(QPolygonF(series))
                 painter.setBrush(QBrush(color))
                 for pt in series:
-                    painter.drawEllipse(pt, 3, 3)
+                    painter.drawEllipse(pt, 2, 2)
 
             stat = self._stats.get(key)
             if not stat:
@@ -250,8 +263,8 @@ class PlotCanvas(QWidget):
 
             max_point = QPointF(map_x(max_idx), map_y(max_val))
             min_point = QPointF(map_x(min_idx), map_y(min_val))
-            painter.drawEllipse(max_point, 5, 5)
-            painter.drawEllipse(min_point, 5, 5)
+            painter.drawEllipse(max_point, 3, 3)
+            painter.drawEllipse(min_point, 3, 3)
 
             painter.setPen(QPen(color))
             painter.drawText(max_point + QPointF(6, -6), f"max {max_val:.3f}{unit}")
@@ -286,7 +299,7 @@ class PlotCanvas(QWidget):
         )
 
         painter.save()
-        painter.setBrush(QColor(255, 255, 255, 220))
+        painter.setBrush(QColor(255, 255, 255, 180))
         painter.setPen(QPen(QColor("#444444"), 1))
         painter.drawRoundedRect(rect, 6, 6)
 
