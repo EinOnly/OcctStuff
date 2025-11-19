@@ -111,7 +111,8 @@ class Layers(QWidget):
             if back:
                 shape_back = shape.copy()
                 mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
-                shape_back = Calculate.Mirror(shape_back, mirror_x, currentParams.get("pattern_pbh", 0)/2)
+                mirror_y = None
+                shape_back = Calculate.Mirror(shape_back, mirror_x, mirror_y)
                 shape_back[:, 0] += offset
                 result["back"] = {
                     "shape": shape_back,
@@ -327,11 +328,13 @@ class Layers(QWidget):
                 # Last pattern transitions to next layer
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = nextConfig.get("layer", {}).copy()
-                location = "end"
+                location = "start"
             else:
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
+
+            mirror = not currentConfig.get("layer", {}).get("pattern_twist", True)
 
             tasks.append({
                 "currentParams": currentParams,
@@ -344,7 +347,7 @@ class Layers(QWidget):
                 "front": front,
                 "back": back,
                 "index": i,
-                "mirror": False
+                "mirror": mirror
             })
 
         # Execute all patterns in parallel

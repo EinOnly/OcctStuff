@@ -88,10 +88,26 @@ class Pattern(QWidget):
     def _buildTopInner(assist: Dict[str, Any], pwidth: float) -> np.ndarray:
         """Build top portion of outer curve with tcc boundary clamping."""
         base = Pattern._buildTopOuter(assist)
+
+        # Check if we have enough points for offset operation
+        if len(base) < 2:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
         spacing = assist.get("spacing", 0.0)
         shift = pwidth + spacing
         clamp = assist.get("max_tx", 0.0) + spacing
         base[:, 0] += shift
+
+        # Remove duplicate consecutive points to avoid zero-length segments
+        if len(base) > 1:
+            diffs = np.linalg.norm(base[1:] - base[:-1], axis=1)
+            valid_mask = np.concatenate(([True], diffs > 1e-9))
+            base = base[valid_mask]
+
+        # Check again after removing duplicates
+        if len(base) < 2:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
         inner = Calculate.Offset(base, spacing)
         # Vectorized x-offset: shift all x-coordinates
         inner = Calculate.Clamp(inner, clamp)
@@ -134,10 +150,26 @@ class Pattern(QWidget):
     def _buildBottomInner(assist: Dict[str, Any], pwidth: float) -> np.ndarray:
         """Build top portion of outer curve with tcc boundary clamping."""
         base = Pattern._buildBottomOuter(assist)
+
+        # Check if we have enough points for offset operation
+        if len(base) < 2:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
         spacing = assist.get("spacing", 0.0)
         shift = pwidth + spacing
         clamp = assist.get("max_bx", 0.0) + spacing
         base[:, 0] += shift
+
+        # Remove duplicate consecutive points to avoid zero-length segments
+        if len(base) > 1:
+            diffs = np.linalg.norm(base[1:] - base[:-1], axis=1)
+            valid_mask = np.concatenate(([True], diffs > 1e-9))
+            base = base[valid_mask]
+
+        # Check again after removing duplicates
+        if len(base) < 2:
+            return np.array([], dtype=np.float64).reshape(0, 2)
+
         inner = Calculate.Offset(base, spacing)
         # Vectorized x-offset: shift all x-coordinates
         inner = Calculate.Clamp(inner, clamp)
@@ -164,7 +196,7 @@ class Pattern(QWidget):
         return (outer, inner)
 
     @staticmethod
-    def _buildConvexHull(top_outer: np.ndarray, bottom_outer: np.ndarray, width: float) -> np.ndarray:
+    def _buildConvexHull(top_outer: np.ndarray, bottom_outer: np.ndarray, width: float, flip_y: bool = False) -> np.ndarray:
         """
         Build convex hull by connecting top/bottom outer curves and mirroring across center line.
 
@@ -172,11 +204,13 @@ class Pattern(QWidget):
         1. Taking outer curves from top and bottom
         2. Clipping at center line (width/2)
         3. Mirroring across center line to create symmetric shape
+        4. Optionally flipping y-axis for the right side
 
         Args:
             top_outer: Top outer curve points
             bottom_outer: Bottom outer curve points
             width: Pattern width for center line calculation
+            flip_y: If True, also flip y-axis when mirroring (for non-twist patterns)
 
         Returns:
             numpy array of convex hull points forming a closed polygon
@@ -225,9 +259,15 @@ class Pattern(QWidget):
         top_clipped = np.array(top_clipped, dtype=np.float64)
         bottom_clipped = np.array(bottom_clipped, dtype=np.float64)
 
-        # Mirror across center line to create right side
-        top_mirrored = Calculate.Mirror(top_clipped.copy(), axis_x=center_x)
-        bottom_mirrored = Calculate.Mirror(bottom_clipped.copy(), axis_x=center_x)
+        if flip_y:
+            # For non-twist patterns: mirror x, then swap top and bottom
+            # This creates a vertical flip effect on the right side
+            top_mirrored = Calculate.Mirror(bottom_clipped.copy(), axis_x=center_x)
+            bottom_mirrored = Calculate.Mirror(top_clipped.copy(), axis_x=center_x)
+        else:
+            # For twist patterns: simple x-axis mirror
+            top_mirrored = Calculate.Mirror(top_clipped.copy(), axis_x=center_x)
+            bottom_mirrored = Calculate.Mirror(bottom_clipped.copy(), axis_x=center_x)
 
         # Build closed convex hull: top_left -> bottom_left -> bottom_right -> top_right
         convex_hull = np.vstack([
@@ -434,9 +474,21 @@ class Pattern(QWidget):
         next_assist = Pattern._buildAssist(nextParams)
 
         shape, outer_end_idx, top, bottom = Pattern._buildShape(current_assist, next_assist, location)
+        
         # convexhull = Pattern._buildConvexHull(top[0], bottom[0], current_assist.get("width", 0.0))
-        convexhull = Pattern._buildConvexHull(Calculate.Mirror(bottom[0], None, current_assist.get("height", 0.0)/2)[::-1], bottom[0], current_assist.get("width", 0.0))
-
+        if currentParams.get("pattern_twist", False):
+            convexhull = Pattern._buildConvexHull(
+                Calculate.Mirror(bottom[0], None, current_assist.get("height", 0.0)/2)[::-1], 
+                bottom[0], 
+                current_assist.get("width", 0.0)
+            )
+        else:
+            convexhull = Pattern._buildConvexHull(
+                top[0], 
+                bottom[0], 
+                current_assist.get("width", 0.0)
+            )
+        
         # Calculate resistance along outer curve (without twist)
         if len(shape) > 0:
             # Thickness: 0.047 mm (copper foil standard)
