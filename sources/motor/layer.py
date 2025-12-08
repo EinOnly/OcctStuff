@@ -111,7 +111,7 @@ class Layers(QWidget):
             if back:
                 shape_back = shape.copy()
                 mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
-                mirror_y = None
+                mirror_y = currentParams.get("pattern_pbh", 0)/2
                 shape_back = Calculate.Mirror(shape_back, mirror_x, mirror_y)
                 shape_back[:, 0] += offset
                 result["back"] = {
@@ -328,7 +328,7 @@ class Layers(QWidget):
                 # Last pattern transitions to next layer
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = nextConfig.get("layer", {}).copy()
-                location = "start"
+                location = "end"
             else:
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
