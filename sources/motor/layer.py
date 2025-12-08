@@ -1,4 +1,5 @@
-import numpy as np
+import csv
+from pathlib import Path
 from typing import Dict, Any, Iterable, List, Tuple, Optional
 
 # from log import CORELOG
@@ -413,6 +414,82 @@ class Layers(QWidget):
 
         return start_offset + count * (ppw + psp)  # Return final offset for next layer
 
+    def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
+        """
+        Export convex hull, pattern area, and resistance metrics for selected patterns.
+        Captures layer[0], layer[-2], and layer[-1] for each physical layer on both sides.
+        """
+        if not layers:
+            return
+
+        rows: List[Dict[str, Any]] = []
+        targets = [
+            (0, "layer[0]"),
+            (-2, "layer[-2]"),
+            (-1, "layer[-1]"),
+        ]
+
+        for position, entries in layers.items():
+            if not entries:
+                continue
+
+            grouped: Dict[Tuple[Optional[int], Optional[str]], List[Dict[str, Any]]] = {}
+            for entry in entries:
+                key = (entry.get("layer_index"), entry.get("layer_label"))
+                grouped.setdefault(key, []).append(entry)
+
+            for (layer_idx, layer_label), bucket in grouped.items():
+                if not bucket:
+                    continue
+
+                sorted_bucket = sorted(bucket, key=lambda item: item.get("index", 0))
+                seen_indices = set()
+
+                for target_idx, label in targets:
+                    real_idx = target_idx
+                    if target_idx < 0:
+                        real_idx = len(sorted_bucket) + target_idx
+                    if real_idx < 0 or real_idx >= len(sorted_bucket):
+                        continue
+                    if real_idx in seen_indices:
+                        continue
+                    seen_indices.add(real_idx)
+
+                    entry = sorted_bucket[real_idx]
+                    metrics = entry.get("metrics", {})
+                    rows.append({
+                        "side": position,
+                        "layer_index": layer_idx,
+                        "layer_label": layer_label,
+                        "pattern_index": entry.get("index"),
+                        "location": entry.get("location"),
+                        "sampled_from": label,
+                        "convexhull_area": metrics.get("convexhull_area"),
+                        "pattern_area": metrics.get("pattern_area"),
+                        "pattern_resistance": metrics.get("pattern_resistance"),
+                    })
+
+        if not rows:
+            return
+
+        export_path = Path(__file__).resolve().parent / export_filename
+        fieldnames = [
+            "side",
+            "layer_index",
+            "layer_label",
+            "pattern_index",
+            "location",
+            "sampled_from",
+            "convexhull_area",
+            "pattern_area",
+            "pattern_resistance",
+        ]
+
+        with export_path.open("w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
     def getLayers(self) -> Dict[str, Any]:
         '''
         Build all layers based on current parameters.
@@ -515,6 +592,7 @@ class Layers(QWidget):
                 self._progress_dialog.close()
                 self._progress_dialog = None
 
+        self._export_layer_metrics(layers)
         return layers
 
 class LayerCanvas(QWidget):

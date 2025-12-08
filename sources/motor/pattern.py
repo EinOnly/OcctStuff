@@ -58,6 +58,7 @@ class Pattern(QWidget):
         points = assist.get("top")
         mode = assist.get("mode", "straight")
         radius = assist.get("max_tx", 0.0)
+        height = assist.get("height", 0.0)
 
         if points is None:
             return np.array([], dtype=np.float64).reshape(0, 2)
@@ -79,7 +80,26 @@ class Pattern(QWidget):
 
             # Convert to numpy array and reverse (skip last point which is the first)
             curve_arr = np.array(curve_points, dtype=np.float64)
-            return curve_arr[::-1]  # Reverse and skip first (originally last)
+            result = curve_arr[::-1]  # Reverse
+            
+            # The superellipse curve ends at (0, height - radius).
+            # We need to extend it down to (0, height/2) with a vertical line segment
+            # to ensure the middle section is perfectly parallel.
+            mid_y = height / 2.0
+            curve_end_y = result[-1][1] if len(result) > 0 else mid_y
+            
+            if len(result) > 0 and curve_end_y > mid_y:
+                # Add a vertical line segment from curve end to (0, height/2)
+                # Ensure the last point of superellipse is at x=0
+                result[-1][0] = 0.0
+                # Add the endpoint at (0, height/2)
+                endpoint = np.array([[0.0, mid_y]], dtype=np.float64)
+                result = np.vstack([result, endpoint])
+            elif len(result) > 0:
+                # Curve already reaches below mid_y, just ensure x=0
+                result[-1] = [0.0, mid_y]
+            
+            return result
 
         # Fallback
         return top.copy()
@@ -120,6 +140,7 @@ class Pattern(QWidget):
         points = assist.get("bottom")
         mode = assist.get("mode", "straight")
         radius = assist.get("max_bx", 0.0)
+        height = assist.get("height", 0.0)
 
         if points is None:
             return np.array([], dtype=np.float64).reshape(0, 2)
@@ -141,7 +162,26 @@ class Pattern(QWidget):
 
             # Convert to numpy array and reverse (skip last point which is the first)
             curve_arr = np.array(curve_points, dtype=np.float64)
-            return curve_arr[::-1][1:]  # Reverse and skip first (originally last)
+            result = curve_arr[::-1][1:]  # Reverse and skip first (originally last)
+            
+            # The superellipse curve starts at (0, radius).
+            # We need to extend it up from (0, height/2) with a vertical line segment
+            # to ensure the middle section is perfectly parallel.
+            mid_y = height / 2.0
+            curve_start_y = result[0][1] if len(result) > 0 else mid_y
+            
+            if len(result) > 0 and curve_start_y < mid_y:
+                # Add a vertical line segment from (0, height/2) to curve start
+                # Ensure the first point of superellipse is at x=0
+                result[0][0] = 0.0
+                # Add the start point at (0, height/2)
+                startpoint = np.array([[0.0, mid_y]], dtype=np.float64)
+                result = np.vstack([startpoint, result])
+            elif len(result) > 0:
+                # Curve already starts above mid_y, just ensure x=0
+                result[0] = [0.0, mid_y]
+            
+            return result
 
         # Fallback
         return bottom.copy()
@@ -322,6 +362,22 @@ class Pattern(QWidget):
             bottom[1],   # bottom_inner: from outer_end_idx onwards
             top[1],      # top_inner
         ])
+        
+        # Remove consecutive duplicate points to avoid zero-length edges
+        # which cause BRepBuilderAPI_MakeEdge to fail
+        if len(curve) > 1:
+            diffs = np.linalg.norm(curve[1:] - curve[:-1], axis=1)
+            valid_mask = np.concatenate(([True], diffs > 1e-9))
+            curve = curve[valid_mask]
+            # Recalculate outer_end_idx based on removed duplicates
+            # Count valid points in top[0] and bottom[0]
+            top_outer_len = len(top[0])
+            bottom_outer_len = len(bottom[0])
+            # Check how many duplicates were removed before outer_end_idx
+            original_outer_end = top_outer_len + bottom_outer_len
+            removed_before_outer = np.sum(~valid_mask[:original_outer_end])
+            outer_end_idx = original_outer_end - removed_before_outer
+        
         return curve, outer_end_idx, top, bottom
 
     @staticmethod
