@@ -11,6 +11,12 @@ from PyQt5.QtCore import Qt, QPointF, QCoreApplication
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPolygonF
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QGestureRecognizer, QProgressDialog
 
+try:
+    import ezdxf
+    HAS_EZDXF = True
+except ImportError:
+    HAS_EZDXF = False
+
 
 class Layers(QWidget):
     # Multi-threading disabled by default due to Python GIL limitations
@@ -265,12 +271,14 @@ class Layers(QWidget):
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = nextConfig.get("layer", {}).copy()
                 location = "end"
+            # Handled the first 8 patterns to disable twist
             elif i < 8:
                 currentParams = currentConfig.get("layer", {}).copy()
                 currentParams["pattern_twist"] = False
-                currentParams["pattern_tp1"] += currentParams["pattern_ppw"]
+                currentParams["pattern_tp1"] += currentParams["pattern_ppw"] + currentParams["pattern_psp"]
                 nextParams = currentParams
                 back = False
+            # Handled the mid normal pattern
             else:
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
@@ -547,6 +555,141 @@ class Layers(QWidget):
 
         return rows, all_resistances
 
+    def _export_layers_to_dxf(self, layers: Dict[str, Any], export_filename: str = "layers_export.dxf"):
+        """
+        Export all layer polylines to DXF format, grouped by layer.
+
+        Args:
+            layers: Dictionary containing 'front' and 'back' layer shapes
+            export_filename: Output DXF filename
+        """
+        if not HAS_EZDXF:
+            print("Warning: ezdxf not installed. Skipping DXF export.")
+            print("Install with: pip install ezdxf")
+            return
+
+        if not layers:
+            return
+
+        # Create new DXF document
+        doc = ezdxf.new('R2010')
+        msp = doc.modelspace()
+
+        # Group front shapes by layer_index
+        front_shapes = layers.get("front", [])
+        front_by_layer = {}
+        for shape_data in front_shapes:
+            layer_index = shape_data.get("layer_index", 0)
+            layer_label = shape_data.get("layer_label", f"Layer{layer_index}")
+            if layer_index not in front_by_layer:
+                front_by_layer[layer_index] = {
+                    "label": layer_label,
+                    "shapes": [],
+                    "color": shape_data.get("color", "#de7cfc")
+                }
+            front_by_layer[layer_index]["shapes"].append(shape_data)
+
+        # Group back shapes by layer_index
+        back_shapes = layers.get("back", [])
+        back_by_layer = {}
+        for shape_data in back_shapes:
+            layer_index = shape_data.get("layer_index", 0)
+            layer_label = shape_data.get("layer_label", f"Layer{layer_index}")
+            if layer_index not in back_by_layer:
+                back_by_layer[layer_index] = {
+                    "label": layer_label,
+                    "shapes": [],
+                    "color": shape_data.get("color", "#de7cfc")
+                }
+            back_by_layer[layer_index]["shapes"].append(shape_data)
+
+        # Export front layers
+        for layer_idx in sorted(front_by_layer.keys()):
+            layer_info = front_by_layer[layer_idx]
+            layer_name = f"front-layer{layer_idx}"
+            aci_color = self._hex_to_aci_color(layer_info["color"])
+
+            for shape_data in layer_info["shapes"]:
+                shape = shape_data.get("shape")
+                if shape is not None and len(shape) > 0:
+                    # Create polyline points (x, y) - DXF uses 2D coordinates
+                    points = [(pt[0], pt[1]) for pt in shape]
+
+                    # Ensure closed polyline
+                    if points[0] != points[-1]:
+                        points.append(points[0])
+
+                    # Add polyline to DXF
+                    polyline = msp.add_lwpolyline(points)
+                    polyline.dxf.layer = layer_name
+                    polyline.dxf.color = aci_color
+
+        # Export back layers
+        for layer_idx in sorted(back_by_layer.keys()):
+            layer_info = back_by_layer[layer_idx]
+            layer_name = f"back-layer{layer_idx}"
+            aci_color = self._hex_to_aci_color(layer_info["color"])
+
+            for shape_data in layer_info["shapes"]:
+                shape = shape_data.get("shape")
+                if shape is not None and len(shape) > 0:
+                    # Create polyline points (x, y)
+                    points = [(pt[0], pt[1]) for pt in shape]
+
+                    # Ensure closed polyline
+                    if points[0] != points[-1]:
+                        points.append(points[0])
+
+                    # Add polyline to DXF
+                    polyline = msp.add_lwpolyline(points)
+                    polyline.dxf.layer = layer_name
+                    polyline.dxf.color = aci_color
+
+        # Save DXF file
+        export_path = Path(__file__).resolve().parent / export_filename
+        doc.saveas(export_path)
+        print(f"DXF exported to: {export_path}")
+
+    def _hex_to_aci_color(self, hex_color: str) -> int:
+        """
+        Convert hex color to approximate AutoCAD Color Index (ACI).
+
+        Args:
+            hex_color: Hex color string (e.g., "#de7cfc")
+
+        Returns:
+            int: ACI color index (1-255)
+        """
+        # Remove '#' if present
+        hex_color = hex_color.lstrip('#')
+
+        # Parse RGB values
+        try:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+        except (ValueError, IndexError):
+            return 7  # Default white
+
+        # Simple mapping to common ACI colors
+        # This is a basic approximation
+        if r > 200 and g < 100 and b < 100:
+            return 1  # Red
+        elif r < 100 and g > 200 and b < 100:
+            return 3  # Green
+        elif r < 100 and g < 100 and b > 200:
+            return 5  # Blue
+        elif r > 200 and g > 200 and b < 100:
+            return 2  # Yellow
+        elif r > 200 and g < 100 and b > 200:
+            return 6  # Magenta
+        elif r < 100 and g > 200 and b > 200:
+            return 4  # Cyan
+        elif r > 200 and g > 200 and b > 200:
+            return 7  # White
+        else:
+            return 8  # Gray
+
     def getLayers(self) -> Dict[str, Any]:
         '''
         Build all layers based on current parameters.
@@ -650,6 +793,7 @@ class Layers(QWidget):
                 self._progress_dialog = None
 
         self._export_layer_metrics(layers)
+        self._export_layers_to_dxf(layers)
         return layers
 
 class LayerCanvas(QWidget):
