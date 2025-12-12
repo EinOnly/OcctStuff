@@ -417,59 +417,62 @@ class Layers(QWidget):
     def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
         """
         Export convex hull, pattern area, and resistance metrics for selected patterns.
-        Captures layer[0], layer[-2], and layer[-1] for each physical layer on both sides.
+        Samples indices [0, 9, 20, 52, 53] from each layer on both sides.
+        Calculates overall average resistance across all patterns.
+        Output format: grouped by layer, then front/back within each layer, then overall average.
         """
         if not layers:
             return
 
-        rows: List[Dict[str, Any]] = []
-        targets = [
-            (0, "layer[0]"),
-            (-2, "layer[-2]"),
-            (-1, "layer[-1]"),
-        ]
+        # Target indices to sample
+        target_indices = [0, 9, 20, 52, 53]
 
-        for position, entries in layers.items():
-            if not entries:
-                continue
+        # Collect data for front and back separately
+        front_rows: List[Dict[str, Any]] = []
+        back_rows: List[Dict[str, Any]] = []
 
-            grouped: Dict[Tuple[Optional[int], Optional[str]], List[Dict[str, Any]]] = {}
-            for entry in entries:
-                key = (entry.get("layer_index"), entry.get("layer_label"))
-                grouped.setdefault(key, []).append(entry)
+        # For calculating overall average resistance
+        all_resistances: List[float] = []
 
-            for (layer_idx, layer_label), bucket in grouped.items():
-                if not bucket:
-                    continue
+        # Process front side
+        if "front" in layers and layers["front"]:
+            front_rows, front_resistances = self._process_side_metrics(
+                layers["front"], "front", target_indices
+            )
+            all_resistances.extend(front_resistances)
 
-                sorted_bucket = sorted(bucket, key=lambda item: item.get("index", 0))
-                seen_indices = set()
+        # Process back side
+        if "back" in layers and layers["back"]:
+            back_rows, back_resistances = self._process_side_metrics(
+                layers["back"], "back", target_indices
+            )
+            all_resistances.extend(back_resistances)
 
-                for target_idx, label in targets:
-                    real_idx = target_idx
-                    if target_idx < 0:
-                        real_idx = len(sorted_bucket) + target_idx
-                    if real_idx < 0 or real_idx >= len(sorted_bucket):
-                        continue
-                    if real_idx in seen_indices:
-                        continue
-                    seen_indices.add(real_idx)
+        # Combine and sort by layer_index, then by side (front before back)
+        all_data_rows = front_rows + back_rows
+        # Sort by: layer_index (ascending), then side (back before front alphabetically, so reverse)
+        all_data_rows.sort(key=lambda x: (x["layer_index"] or 0, x["side"]))
 
-                    entry = sorted_bucket[real_idx]
-                    metrics = entry.get("metrics", {})
-                    rows.append({
-                        "side": position,
-                        "layer_index": layer_idx,
-                        "layer_label": layer_label,
-                        "pattern_index": entry.get("index"),
-                        "location": entry.get("location"),
-                        "sampled_from": label,
-                        "convexhull_area": metrics.get("convexhull_area"),
-                        "pattern_area": metrics.get("pattern_area"),
-                        "pattern_resistance": metrics.get("pattern_resistance"),
-                    })
+        # Calculate overall average resistance
+        average_rows: List[Dict[str, Any]] = []
+        if all_resistances:
+            overall_avg = sum(all_resistances) / len(all_resistances)
+            average_rows.append({
+                "side": "overall",
+                "layer_index": "",
+                "layer_label": "",
+                "pattern_index": "AVG",
+                "location": "average",
+                "sampled_from": f"n={len(all_resistances)}",
+                "convexhull_area": "",
+                "pattern_area": "",
+                "pattern_resistance": overall_avg,
+            })
 
-        if not rows:
+        # Combine all rows: data sorted by layer, then overall average
+        all_rows = all_data_rows + average_rows
+
+        if not all_rows:
             return
 
         export_path = Path(__file__).resolve().parent / export_filename
@@ -488,7 +491,61 @@ class Layers(QWidget):
         with export_path.open("w", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(all_rows)
+
+    def _process_side_metrics(
+        self,
+        entries: List[Dict[str, Any]],
+        side: str,
+        target_indices: List[int]
+    ) -> Tuple[List[Dict[str, Any]], List[float]]:
+        """
+        Process metrics for one side (front or back).
+        Returns a tuple of (rows, all_resistances).
+        """
+        rows: List[Dict[str, Any]] = []
+        all_resistances: List[float] = []
+
+        # Group by layer
+        grouped: Dict[Tuple[Optional[int], Optional[str]], List[Dict[str, Any]]] = {}
+        for entry in entries:
+            key = (entry.get("layer_index"), entry.get("layer_label"))
+            grouped.setdefault(key, []).append(entry)
+
+        # Process each layer
+        for (layer_idx, layer_label), bucket in grouped.items():
+            if not bucket:
+                continue
+
+            sorted_bucket = sorted(bucket, key=lambda item: item.get("index", 0))
+
+            # Collect all resistances for overall average calculation
+            for entry in sorted_bucket:
+                metrics = entry.get("metrics", {})
+                resistance = metrics.get("pattern_resistance")
+                if resistance is not None:
+                    all_resistances.append(resistance)
+
+            # Sample specific indices
+            for target_idx in target_indices:
+                if target_idx < 0 or target_idx >= len(sorted_bucket):
+                    continue
+
+                entry = sorted_bucket[target_idx]
+                metrics = entry.get("metrics", {})
+                rows.append({
+                    "side": side,
+                    "layer_index": layer_idx,
+                    "layer_label": layer_label,
+                    "pattern_index": entry.get("index"),
+                    "location": entry.get("location"),
+                    "sampled_from": f"index[{target_idx}]",
+                    "convexhull_area": metrics.get("convexhull_area"),
+                    "pattern_area": metrics.get("pattern_area"),
+                    "pattern_resistance": metrics.get("pattern_resistance"),
+                })
+
+        return rows, all_resistances
 
     def getLayers(self) -> Dict[str, Any]:
         '''

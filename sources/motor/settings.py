@@ -87,7 +87,7 @@ layers_a = {
         {
             "type": "end",
             "layer":{
-                "layer_pdc": 54,
+                "layer_pdc": 63,
                 "layer_pbw":5.4201,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.497,
@@ -321,7 +321,7 @@ layers_d = {
     "global": {
         "layer_psp": 0.05,
         "layer_ptc": 0.047,
-        "layer_pmd": "superelliptic",
+        "layer_pmd": "straight",
         "layer_mod": "even",
     },
     "layers": [
