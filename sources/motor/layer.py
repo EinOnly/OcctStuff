@@ -271,14 +271,12 @@ class Layers(QWidget):
                 currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = nextConfig.get("layer", {}).copy()
                 location = "end"
-            # Handled the first 8 patterns to disable twist
             elif i < 8:
                 currentParams = currentConfig.get("layer", {}).copy()
                 currentParams["pattern_twist"] = False
                 currentParams["pattern_tp1"] += currentParams["pattern_ppw"] + currentParams["pattern_psp"]
                 nextParams = currentParams
                 back = False
-            # Handled the mid normal pattern
             else:
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
@@ -402,7 +400,6 @@ class Layers(QWidget):
                 # Regular patterns (current -> current)
                 currentParams = currentConfig.get("layer", {})
                 nextParams = currentParams
-
             tasks.append({
                 "currentParams": currentParams,
                 "nextParams": nextParams,
