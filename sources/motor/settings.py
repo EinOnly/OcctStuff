@@ -1,3 +1,4 @@
+# 1320 Solution
 layers_a = {
     "global": {
         "layer_psp": 0.05,
@@ -36,7 +37,7 @@ layers_a = {
             "type": "normal",
             "layer":{
                 "layer_pdc": 54,
-                "layer_pbw":5.76,
+                "layer_pbw": 5.76,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.531,
                 
@@ -62,7 +63,7 @@ layers_a = {
             "type": "normal",
             "layer":{
                 "layer_pdc": 54,
-                "layer_pbw":5.49,
+                "layer_pbw": 5.59,
                 "layer_pbh": 8.0710,
                 "layer_ppw": 0.514,
                 
@@ -317,6 +318,7 @@ layers_c = {
     ]
 }
 
+# 1020 Solution
 layers_d = {
     "global": {
         "layer_psp": 0.05,

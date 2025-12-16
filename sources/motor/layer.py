@@ -338,7 +338,7 @@ class Layers(QWidget):
                 location = "end"
             else:
                 # Regular patterns (current -> current)
-                currentParams = currentConfig.get("layer", {})
+                currentParams = currentConfig.get("layer", {}).copy()
                 nextParams = currentParams
 
             mirror = not currentConfig.get("layer", {}).get("pattern_twist", True)
@@ -789,8 +789,8 @@ class Layers(QWidget):
                 self._progress_dialog.close()
                 self._progress_dialog = None
 
-        self._export_layer_metrics(layers)
-        self._export_layers_to_dxf(layers)
+        # self._export_layer_metrics(layers)
+        # self._export_layers_to_dxf(layers)
         return layers
 
 class LayerCanvas(QWidget):

@@ -10,3 +10,4 @@ __pycache__/
 *.stp
 *.STEP
 *.DS_Store
+.DS_Store
