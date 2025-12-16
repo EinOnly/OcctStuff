@@ -425,7 +425,7 @@ class LParams(QObject):
         """Load layers configuration from settings.py"""
         try:
             import settings
-            return settings.layers_a
+            return settings.layers_b
         except Exception:
             # Fallback to default config
             return {
