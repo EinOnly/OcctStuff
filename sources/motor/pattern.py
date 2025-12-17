@@ -430,7 +430,7 @@ class Pattern(QWidget):
             top_points = np.array(
                 [
                     [tp1,     height],
-                    [tp1 - pattern_width/2,     height],
+                    [tp1,     height],
                     [0.0,     height/2.0 + tp3],
                     [0.0,     height/2.0],
                 ],
@@ -440,7 +440,7 @@ class Pattern(QWidget):
                 [
                     [0.0, height/2.0],
                     [0.0, bp2],
-                    [bp1 - pattern_width/2, 0.0],
+                    [bp1, 0.0],
                     [bp1, 0.0],
                 ],
                 dtype=np.float64,
@@ -528,7 +528,6 @@ class Pattern(QWidget):
 
         current_assist = Pattern._buildAssist(currentParams)
         next_assist = Pattern._buildAssist(nextParams)
-
         shape, outer_end_idx, top, bottom = Pattern._buildShape(current_assist, next_assist, location)
         
         # convexhull = Pattern._buildConvexHull(top[0], bottom[0], current_assist.get("width", 0.0))
