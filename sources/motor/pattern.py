@@ -443,6 +443,7 @@ class Pattern(QWidget):
         else:
             bp1 = float(params.get("pattern_bp1", 0.0) or 0.0) - pattern_width/2 - float(params.get("pattern_psp", 0.0) or 0.0)/2
         tp3 = float(params.get("pattern_tp3", 0.0) or 0.0)
+        bp3 = float(params.get("pattern_bp3", 0.0) or 0.0)
         bp2 = float(params.get("pattern_bp2", 0.0) or 0.0)
 
         tcc = float(params.get("pattern_tcc", width/2.0) or 0.0)
@@ -463,7 +464,7 @@ class Pattern(QWidget):
             bottom_points = np.array(
                 [
                     [0.0, height/2.0],
-                    [0.0, bp2],
+                    [0.0, height/2.0 - bp3],
                     [bp1, 0.0],
                     [bp1, 0.0],
                 ],
@@ -985,3 +986,258 @@ class PatternCanvas(QWidget):
         if arr.ndim != 2 or arr.shape[1] < 2:
             return []
         return [(float(x), float(y)) for x, y in arr]
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import sys
+    import os
+
+    # Add parent directory to path to import settings
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from settings import layers_a, layers_b, layers_c
+
+    # Use normal layer from settings (second layer in layers_b)
+    normal_layer_config = layers_a["layers"][1]
+    global_settings = layers_a["global"]
+
+    # Create base params by merging layer config with global settings
+    base_layer_params = normal_layer_config["layer"].copy()
+
+    # Add global settings with pattern_ prefix (this is how Pattern._buildAssist expects them)
+    base_layer_params["pattern_psp"] = global_settings["layer_psp"]
+    base_layer_params["pattern_mode"] = global_settings["layer_pmd"]
+
+    # _buildAssist expects pattern_pbw/pbh/ppw instead of layer_pbw/pbh/ppw
+    # Add these mappings
+    base_layer_params["pattern_pbw"] = base_layer_params["layer_pbw"]
+    base_layer_params["pattern_pbh"] = base_layer_params["layer_pbh"]
+    base_layer_params["pattern_ppw"] = base_layer_params["layer_ppw"]
+    base_layer_params["pattern_twist"] = False
+
+    print("Testing pattern parameter variations...")
+    print(f"Base parameters: {base_layer_params}")
+
+    # Test 1: Straight mode - pattern_tp3 + pattern_bp3 from (ppw, pbh/2 - ppw)
+    print("\n=== Test 1: Straight mode - tp3 + bp3 variation ===")
+    layer_pbh = base_layer_params["layer_pbh"]
+    layer_pbw = base_layer_params["layer_pbw"]
+    layer_ppw = base_layer_params["layer_ppw"]
+    min_tp3_bp3 = layer_ppw
+    max_tp3_bp3 = layer_pbh / 2.0 - layer_ppw
+    test1_params = base_layer_params.copy()
+    test1_params["pattern_mode"] = "straight"
+    test1_params["pattern_twist"] = False  # Disable twist for straight mode
+    # Set tp1, bp1 and bp2 for straight mode - need reasonable values
+    test1_params["pattern_tp1"] = layer_pbw / 2.0  # Use half width
+    test1_params["pattern_bp1"] = layer_pbw / 2.0
+    test1_params["pattern_bp2"] = 0.0
+
+    tp3_bp3_values = np.arange(min_tp3_bp3, max_tp3_bp3 + 0.1, 0.1)
+    test1_resistances = []
+    test1_areas = []
+
+    for value in tp3_bp3_values:
+        params = test1_params.copy()
+        params["pattern_tp3"] = value
+        # For symmetry: if top goes to height/2 + tp3, bottom should go to height/2 - tp3
+        params["pattern_bp3"] = value
+        # bp1 and tp1 should be the same for symmetry
+        params["pattern_tp1"] = layer_pbw / 2.0
+        params["pattern_bp1"] = layer_pbw / 2.0
+
+        # Build pattern
+        config = {"layer": params}
+        pattern = Pattern.GetPattern(
+            preConfig=None,
+            currentConfig=config,
+            nextConfig=config,
+            side="front",
+            layer="mid",
+            layerIndex=4,
+            patternIndex=4,
+            patternCount=9
+        )
+
+        test1_resistances.append(pattern["pattern_resistance"] * 1000)  # Convert to mΩ
+        test1_areas.append(pattern["convexhull_area"])
+
+    # Test 2: Superellipse mode - pattern_tmm == pattern_bmm from (0.5, 2)
+    print("\n=== Test 2: Superellipse mode - tmm == bmm variation ===")
+    test2_params = base_layer_params.copy()
+    test2_params["pattern_mode"] = "superelliptic"
+    test2_params["pattern_tnn"] = 2.0
+    test2_params["pattern_bnn"] = 2.0
+    # Use the same tp1/bp1 as Test 1
+    test2_params["pattern_tp1"] = layer_pbw / 2.0
+    test2_params["pattern_bp1"] = layer_pbw / 2.0
+    test2_params["pattern_bp2"] = layer_ppw  # Set bp2 to ppw like straight mode
+    # Set tp3 and bp3 to be in the middle of the valid range
+    test2_params["pattern_tp3"] = (min_tp3_bp3 + max_tp3_bp3) / 2.0
+    test2_params["pattern_bp3"] = (min_tp3_bp3 + max_tp3_bp3) / 2.0
+
+    mm_values = np.arange(0.5, 2.05, 0.05)
+    test2_resistances = []
+    test2_areas = []
+
+    for value in mm_values:
+        params = test2_params.copy()
+        params["pattern_tmm"] = value
+        params["pattern_bmm"] = value
+
+        # Build pattern
+        config = {"layer": params}
+        pattern = Pattern.GetPattern(
+            preConfig=None,
+            currentConfig=config,
+            nextConfig=config,
+            side="front",
+            layer="mid",
+            layerIndex=4,
+            patternIndex=4,
+            patternCount=9
+        )
+
+        test2_resistances.append(pattern["pattern_resistance"] * 1000)  # Convert to mΩ
+        test2_areas.append(pattern["convexhull_area"])
+
+    # Create plots - 2 rows x 2 columns
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 2, width_ratios=[1, 2], hspace=0.3, wspace=0.3)
+    fig.suptitle('Pattern Parameter Analysis', fontsize=16, fontweight='bold')
+
+    # Helper function to plot pattern shapes
+    def plot_pattern_shapes(ax, min_pattern, max_pattern, title):
+        ax.set_aspect('equal')
+        ax.set_title(title, fontsize=11, fontweight='bold')
+
+        # Plot min pattern (blue)
+        min_shape = min_pattern['shape']
+        if len(min_shape) > 0:
+            ax.fill(min_shape[:, 0], min_shape[:, 1],
+                   color='lightblue', alpha=0.6, edgecolor='blue', linewidth=1.5, label='Min')
+
+        # Plot max pattern (red)
+        max_shape = max_pattern['shape']
+        if len(max_shape) > 0:
+            ax.fill(max_shape[:, 0], max_shape[:, 1],
+                   color='lightcoral', alpha=0.6, edgecolor='red', linewidth=1.5, label='Max')
+
+        ax.legend(loc='upper right', fontsize=9)
+        ax.grid(True, alpha=0.2)
+        ax.set_xlabel('Width (mm)', fontsize=9)
+        ax.set_ylabel('Height (mm)', fontsize=9)
+
+    # Generate extreme patterns for Test 1
+    test1_min_params = test1_params.copy()
+    test1_min_params["pattern_tp3"] = tp3_bp3_values[0]
+    test1_min_params["pattern_bp3"] = tp3_bp3_values[0]
+    test1_min_pattern = Pattern.GetPattern(
+        preConfig=None,
+        currentConfig={"layer": test1_min_params},
+        nextConfig={"layer": test1_min_params},
+        side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
+    )
+
+    test1_max_params = test1_params.copy()
+    test1_max_params["pattern_tp3"] = tp3_bp3_values[-1]
+    test1_max_params["pattern_bp3"] = tp3_bp3_values[-1]
+    test1_max_pattern = Pattern.GetPattern(
+        preConfig=None,
+        currentConfig={"layer": test1_max_params},
+        nextConfig={"layer": test1_max_params},
+        side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
+    )
+
+    # Row 1, Col 1: Test 1 pattern shapes
+    ax_shape1 = fig.add_subplot(gs[0, 0])
+    plot_pattern_shapes(ax_shape1, test1_min_pattern, test1_max_pattern,
+                       f'Straight Mode Shapes\nMin: tp3={tp3_bp3_values[0]:.1f}mm, Max: tp3={tp3_bp3_values[-1]:.1f}mm')
+
+    # Row 1, Col 2: Test 1 curves
+    ax1 = fig.add_subplot(gs[0, 1])
+    color1 = 'tab:blue'
+    ax1.set_xlabel('tp3 = bp3 (mm)', fontsize=11)
+    ax1.set_ylabel('Resistance (mΩ)', fontsize=11, color=color1)
+    ax1.plot(tp3_bp3_values, test1_resistances, color=color1, linewidth=2, marker='o', markersize=4, label='Resistance')
+    ax1.tick_params(axis='y', labelcolor=color1)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title('Straight Mode: tp3=bp3 variation', fontsize=12, fontweight='bold')
+
+    ax1_twin = ax1.twinx()
+    color2 = 'tab:green'
+    ax1_twin.set_ylabel('Envelope Area (mm²)', fontsize=11, color=color2)
+    ax1_twin.plot(tp3_bp3_values, test1_areas, color=color2, linewidth=2, marker='s', markersize=4, label='Area')
+    ax1_twin.tick_params(axis='y', labelcolor=color2)
+
+    # Annotate every 3rd point for Test 1
+    for i, (x, r, a) in enumerate(zip(tp3_bp3_values, test1_resistances, test1_areas)):
+        if i % 3 == 0:
+            ax1.annotate(f'{r:.1f}', (x, r), textcoords="offset points", xytext=(0, 5), ha='center', fontsize=8, color=color1)
+            ax1_twin.annotate(f'{a:.1f}', (x, a), textcoords="offset points", xytext=(0, -10), ha='center', fontsize=8, color=color2)
+
+    # Generate extreme patterns for Test 2
+    test2_min_params = test2_params.copy()
+    test2_min_params["pattern_tmm"] = mm_values[0]
+    test2_min_params["pattern_bmm"] = mm_values[0]
+    test2_min_pattern = Pattern.GetPattern(
+        preConfig=None,
+        currentConfig={"layer": test2_min_params},
+        nextConfig={"layer": test2_min_params},
+        side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
+    )
+
+    test2_max_params = test2_params.copy()
+    test2_max_params["pattern_tmm"] = mm_values[-1]
+    test2_max_params["pattern_bmm"] = mm_values[-1]
+    test2_max_pattern = Pattern.GetPattern(
+        preConfig=None,
+        currentConfig={"layer": test2_max_params},
+        nextConfig={"layer": test2_max_params},
+        side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
+    )
+
+    # Row 2, Col 1: Test 2 pattern shapes
+    ax_shape2 = fig.add_subplot(gs[1, 0])
+    plot_pattern_shapes(ax_shape2, test2_min_pattern, test2_max_pattern,
+                       f'Superellipse Mode Shapes\nMin: m={mm_values[0]:.1f}, Max: m={mm_values[-1]:.1f}')
+
+    # Row 2, Col 2: Test 2 curves
+    ax2 = fig.add_subplot(gs[1, 1])
+    color3 = 'tab:red'
+    ax2.set_xlabel('tmm = bmm (n=2)', fontsize=11)
+    ax2.set_ylabel('Resistance (mΩ)', fontsize=11, color=color3)
+    ax2.plot(mm_values, test2_resistances, color=color3, linewidth=2, marker='o', markersize=4, label='Resistance')
+    ax2.tick_params(axis='y', labelcolor=color3)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_title('Superellipse Mode: tmm=bmm variation', fontsize=12, fontweight='bold')
+
+    ax2_twin = ax2.twinx()
+    color4 = 'tab:purple'
+    ax2_twin.set_ylabel('Envelope Area (mm²)', fontsize=11, color=color4)
+    ax2_twin.plot(mm_values, test2_areas, color=color4, linewidth=2, marker='s', markersize=4, label='Area')
+    ax2_twin.tick_params(axis='y', labelcolor=color4)
+
+    # Annotate every 3rd point for Test 2
+    for i, (x, r, a) in enumerate(zip(mm_values, test2_resistances, test2_areas)):
+        if i % 3 == 0:
+            ax2.annotate(f'{r:.1f}', (x, r), textcoords="offset points", xytext=(0, 5), ha='center', fontsize=8, color=color3)
+            ax2_twin.annotate(f'{a:.1f}', (x, a), textcoords="offset points", xytext=(0, -10), ha='center', fontsize=8, color=color4)
+
+    # Save figure
+    output_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'pattern_parameter_analysis.png')
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    print(f"\nPlot saved to: {output_file}")
+
+    # Print summary statistics
+    print("\n=== Summary Statistics ===")
+    print(f"\nTest 1 (Straight mode, tp3=bp3: {min_tp3_bp3:.2f} to {max_tp3_bp3:.2f} mm, range=[ppw, pbh/2-ppw]):")
+    print(f"  Resistance range: {min(test1_resistances):.3f} to {max(test1_resistances):.3f} mΩ")
+    print(f"  Area range: {min(test1_areas):.4f} to {max(test1_areas):.4f} mm²")
+
+    print(f"\nTest 2 (Superellipse mode, tmm=bmm: 0.5 to 2.0, n=2):")
+    print(f"  Resistance range: {min(test2_resistances):.3f} to {max(test2_resistances):.3f} mΩ")
+    print(f"  Area range: {min(test2_areas):.4f} to {max(test2_areas):.4f} mm²")
+
+    plt.show()
+

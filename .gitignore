@@ -11,3 +11,8 @@ __pycache__/
 *.STEP
 *.DS_Store
 .DS_Store
+*.csv
+*.png
+*.log
+*.dxf
+*.bwg

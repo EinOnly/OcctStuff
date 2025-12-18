@@ -314,6 +314,8 @@ class Layers(QWidget):
         self._build_patterns_parallel(tasks, layers)
 
         return start_offset + count * (ppw + psp)  # Return final offset for next layer    def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
+        
+    def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
         """
         Export convex hull, pattern area, and resistance metrics for selected patterns.
         Samples indices [0, 9, 20, 52, 53] from each layer on both sides.
@@ -683,8 +685,8 @@ class Layers(QWidget):
                 self._progress_dialog.close()
                 self._progress_dialog = None
 
-        # self._export_layer_metrics(layers)
-        # self._export_layers_to_dxf(layers)
+        self._export_layer_metrics(layers)
+        self._export_layers_to_dxf(layers)
         return layers
 
 class LayerCanvas(QWidget):
