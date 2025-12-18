@@ -354,16 +354,26 @@ class Pattern(QWidget):
                 - top: Tuple of (top_outer, top_inner) curves
                 - bottom: Tuple of (bottom_outer, bottom_inner) curves
         """
-        if location == "start":
-            top = Pattern._buildTop(currentAssist, nextAssist)
-            bottom = Pattern._buildBottom(currentAssist, currentAssist)
-        elif location == "end":
-            top = Pattern._buildTop(currentAssist, currentAssist)
-            bottom = Pattern._buildBottom(currentAssist, nextAssist)
+        if currentAssist.get("twist", False):
+            if location == "start":
+                top = Pattern._buildTop(currentAssist, nextAssist)
+                bottom = Pattern._buildBottom(currentAssist, currentAssist)
+            elif location == "end":
+                top = Pattern._buildTop(currentAssist, currentAssist)
+                bottom = Pattern._buildBottom(currentAssist, nextAssist)
+            else:
+                top = Pattern._buildTop(currentAssist, nextAssist)
+                bottom = Pattern._buildBottom(currentAssist, nextAssist)
         else:
-            top = Pattern._buildTop(currentAssist, nextAssist)
-            bottom = Pattern._buildBottom(currentAssist, nextAssist)
-
+            if location == "start":
+                top = Pattern._buildTop(currentAssist, currentAssist)
+                bottom = Pattern._buildBottom(currentAssist, currentAssist)
+            elif location == "end":
+                top = Pattern._buildTop(currentAssist, nextAssist)
+                bottom = Pattern._buildBottom(currentAssist, nextAssist)
+            else:
+                top = Pattern._buildTop(currentAssist, nextAssist)
+                bottom = Pattern._buildBottom(currentAssist, nextAssist)
         # Calculate index where outer path ends
         outer_end_idx = len(top[0]) + len(bottom[0])
 
@@ -576,68 +586,167 @@ class Pattern(QWidget):
         location = "normal"
         params_current = None
         params_next = None
-        
-        if layer == "begin":
-            # Start layer logic
-            if patternIndex == patternCount - 1 and nextParams is not None:
-                # Last pattern transitions to next layer
-                params_current = currentParams.copy()
-                params_next = nextParams.copy()
-                location = "end"
-            elif patternIndex < 8:
-                # First 8 patterns use modified current params
-                params_current = currentParams.copy()
-                params_current["pattern_twist"] = False
-                params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
-                params_next = params_current
-                # Don't render back side for these patterns
-                if side == "back":
-                    return Pattern._empty_pattern()
-            else:
-                # Regular patterns (current -> current)
-                params_current = currentParams
-                params_next = currentParams
-                # Pattern 8 doesn't render back side
-                if patternIndex == 8 and side == "back":
-                    return Pattern._empty_pattern()
+        twist = currentParams["pattern_twist"]
+
+        if  twist:
+            if layer == "begin":
+                # Start layer logic
+                if patternIndex == patternCount - 1 and nextParams is not None:
+                    # Last pattern transitions to next layer
+                    params_current = currentParams.copy()
+                    params_next = nextParams.copy()
+                    location = "end"
+                elif patternIndex < 8:
+                    # First 8 patterns use modified current params
+                    params_current = currentParams.copy()
+                    params_current["pattern_twist"] = False
+                    params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    params_next = params_current
+                    # Don't render back side for these patterns
+                    if side == "back":
+                        return Pattern._empty_pattern()
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams
+                    params_next = currentParams
+                    # Pattern 8 doesn't render back side
+                    if patternIndex == 8 and side == "back":
+                        return Pattern._empty_pattern()
+
+            elif layer == "mid":
+                # Normal layer logic
+                if patternIndex == 0 and preParams is not None:
+                    # First pattern transitions from previous layer
+                    params_current = currentParams.copy()
+                    params_next = preParams.copy()
+                    location = "start"
                     
-        elif layer == "mid":
-            # Normal layer logic
-            if patternIndex == 0 and preParams is not None:
-                # First pattern transitions from previous layer
-                params_current = currentParams.copy()
-                params_next = preParams.copy()
-                location = "start"
-            elif patternIndex == patternCount - 1 and nextParams is not None:
-                # Last pattern transitions to next layer
-                params_current = currentParams.copy()
-                params_next = nextParams.copy()
-                location = "end"
-            else:
-                # Regular patterns (current -> current)
-                params_current = currentParams.copy()
-                params_next = params_current
-                
-        elif layer == "end":
-            # End layer logic
-            if patternIndex == 0 and preParams is not None:
-                # First pattern transitions from previous layer
-                params_current = currentParams.copy()
-                params_next = preParams.copy()
-                location = "start"
-            elif patternIndex > patternCount - 10:
-                # Last 9 patterns use modified current params
-                params_current = currentParams.copy()
-                params_current["pattern_twist"] = False
-                params_next = params_current
-                # Don't render front side for these patterns
-                if side == "front":
-                    return Pattern._empty_pattern()
-            else:
-                # Regular patterns (current -> current)
-                params_current = currentParams
-                params_next = currentParams
-        
+                    # When twist status changes at transition, adjust params_next for back side
+                    if side == "back":
+                        current_twist = params_current.get("pattern_twist", True)
+                        pre_twist = params_next.get("pattern_twist", True)
+                        
+                        # If twist status differs, back side should use current params
+                        # to maintain consistency with front side's bottom half
+                        if current_twist != pre_twist:
+                            if not current_twist:
+                                # Current is not twisted, use current for both
+                                params_next = params_current.copy()
+                            
+                elif patternIndex == patternCount - 1 and nextParams is not None:
+                    # Last pattern transitions to next layer
+                    params_current = currentParams.copy()
+                    params_next = nextParams.copy()
+                    location = "end"
+                    
+                    # When twist status changes at transition, adjust params_next for back side
+                    if side == "back":
+                        current_twist = params_current.get("pattern_twist", True)
+                        next_twist = params_next.get("pattern_twist", True)
+                        
+                        # If twist status differs, back side should use current params
+                        # to maintain consistency with front side's bottom half
+                        if current_twist != next_twist:
+                            if not current_twist:
+                                # Current is not twisted, use current for both
+                                params_next = params_current.copy()
+                            
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams.copy()
+                    params_next = params_current
+
+            elif layer == "end":
+                # End layer logic
+                if patternIndex == 0 and preParams is not None:
+                    # First pattern transitions from previous layer
+                    params_current = currentParams.copy()
+                    params_next = preParams.copy()
+                    location = "start"
+                elif patternIndex > patternCount - 10:
+                    # Last 9 patterns use modified current params
+                    params_current = currentParams.copy()
+                    params_current["pattern_twist"] = False
+                    params_next = params_current
+                    # Don't render front side for these patterns
+                    if side == "front":
+                        return Pattern._empty_pattern()
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams
+                    params_next = currentParams
+        else:
+            if layer == "begin":
+                # Start layer logic
+                if patternIndex == patternCount - 1 and nextParams is not None:
+                    # Last pattern transitions to next layer
+                    params_current = currentParams.copy()
+                    params_next = nextParams.copy()
+                    location = "end"
+                elif patternIndex < 8:
+                    # First 8 patterns use modified current params
+                    params_current = currentParams.copy()
+                    params_current["pattern_twist"] = False
+                    params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    params_next = params_current
+                    # Don't render back side for these patterns
+                    if side == "back":
+                        return Pattern._empty_pattern()
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams
+                    params_next = currentParams
+                    # Pattern 8 doesn't render back side
+                    if patternIndex == 8 and side == "back":
+                        return Pattern._empty_pattern()
+
+            elif layer == "mid":
+                # Normal layer logic
+                if patternIndex == 0 and preParams is not None:
+                    # First pattern transitions from previous layer
+                    params_current = currentParams.copy()
+                    params_next = currentParams.copy()
+                    location = "start"
+                    # When back and not twisted, this should align with previous layer's last pattern
+                    if side == "back":
+                        # For back side: use current->pre to align with previous layer's end
+                        params_current = currentParams.copy()
+                        params_next = preParams.copy()
+                elif patternIndex == patternCount - 1 and nextParams is not None:
+                    # Last pattern transitions to next layer
+                    params_current = currentParams.copy()
+                    params_next = nextParams.copy()
+                    location = "end"
+                    # When back and not twisted, this should align with next layer's first pattern
+                    if side == "back":
+                        # For back side: use next->current to align with next layer's start
+                        params_current = nextParams.copy()
+                        params_next = currentParams.copy()
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams.copy()
+                    params_next = params_current
+
+            elif layer == "end":
+                # End layer logic
+                if patternIndex == 0 and preParams is not None:
+                    # First pattern transitions from previous layer
+                    params_current = currentParams.copy()
+                    params_next = preParams.copy()
+                    location = "start"
+                elif patternIndex > patternCount - 10:
+                    # Last 9 patterns use modified current params
+                    params_current = currentParams.copy()
+                    params_current["pattern_twist"] = False
+                    params_next = params_current
+                    # Don't render front side for these patterns
+                    if side == "front":
+                        return Pattern._empty_pattern()
+                else:
+                    # Regular patterns (current -> current)
+                    params_current = currentParams
+                    params_next = currentParams
+
         if params_current is None or params_next is None:
             raise ValueError("Failed to determine pattern parameters")
 
@@ -647,9 +756,18 @@ class Pattern(QWidget):
         
         # Apply mirroring for back side
         if side == "back":
-            mirror = not params_current.get("pattern_twist", True)
-            mirror_x = params_current.get("pattern_ppw", 0) / 2 if mirror else None
+            twist = params_current.get("pattern_twist", True)
             mirror_y = params_current.get("pattern_pbh", 0) / 2
+            
+            if twist:
+                # When twisted: mirror only along Y axis (no X mirror)
+                # This creates the twisted effect
+                mirror_x = None
+            else:
+                # When not twisted: mirror along both X and Y axes
+                # This keeps back side aligned with front side's bottom half
+                mirror_x = params_current.get("pattern_ppw", 0) / 2
+            
             shape = Calculate.Mirror(shape, mirror_x, mirror_y)
         
         # convexhull = Pattern._buildConvexHull(top[0], bottom[0], current_assist.get("width", 0.0))
