@@ -438,8 +438,11 @@ class Pattern(QWidget):
 
         # Get tp1, bp1 values
         tp1 = float(params.get("pattern_tp1", 0.0) or 0.0)
+        if params.get("pattern_twist", False):
+            bp1 = float(params.get("pattern_bp1", 0.0) or 0.0)
+        else:
+            bp1 = float(params.get("pattern_bp1", 0.0) or 0.0) - pattern_width/2 - float(params.get("pattern_psp", 0.0) or 0.0)/2
         tp3 = float(params.get("pattern_tp3", 0.0) or 0.0)
-        bp1 = float(params.get("pattern_bp1", 0.0) or 0.0)
         bp2 = float(params.get("pattern_bp2", 0.0) or 0.0)
 
         tcc = float(params.get("pattern_tcc", width/2.0) or 0.0)
@@ -676,22 +679,16 @@ class Pattern(QWidget):
                     params_current = currentParams
                     params_next = currentParams
         else:
-            params_current = currentParams.copy()
-            params_current["pattern_bp1"] -= params_current["pattern_ppw"]
-            params_current["pattern_bp3"] -= params_current["pattern_ppw"]
-
             if layer == "begin":
                 # Start layer logic
                 if patternIndex == patternCount - 1 and nextParams is not None:
                     # Last pattern transitions to next layer
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_next = nextParams.copy()
-                    params_next["pattern_bp1"] -= params_next["pattern_ppw"]
-                    params_next["pattern_bp3"] -= params_next["pattern_ppw"]
                     location = "end"
                 elif patternIndex < 8:
                     # First 8 patterns use modified current params
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_current["pattern_twist"] = False
                     params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
                     params_next = params_current
@@ -710,47 +707,39 @@ class Pattern(QWidget):
                 # Normal layer logic
                 if patternIndex == 0 and preParams is not None:
                     # First pattern transitions from previous layer
-                    params_current = params_current.copy()
-                    params_next = params_current.copy()
+                    params_current = currentParams.copy()
+                    params_next = currentParams.copy()
                     location = "start"
                     # When back and not twisted, this should align with previous layer's last pattern
                     if side == "back":
                         # For back side: use current->pre to align with previous layer's end
-                        params_current = params_current.copy()
+                        params_current = currentParams.copy()
                         params_next = preParams.copy()
-                        params_next["pattern_bp1"] -= params_next["pattern_ppw"]
-                        params_next["pattern_bp3"] -= params_next["pattern_ppw"]
                 elif patternIndex == patternCount - 1 and nextParams is not None:
                     # Last pattern transitions to next layer
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_next = nextParams.copy()
-                    params_next["pattern_bp1"] -= params_next["pattern_ppw"]
-                    params_next["pattern_bp3"] -= params_next["pattern_ppw"]
                     location = "end"
                     # When back and not twisted, this should align with next layer's first pattern
                     if side == "back":
                         # For back side: use next->current to align with next layer's start
                         params_current = nextParams.copy()
-                        params_current["pattern_bp1"] -= params_current["pattern_ppw"]
-                        params_current["pattern_bp3"] -= params_current["pattern_ppw"]
-                        params_next = params_current.copy()
+                        params_next = currentParams.copy()
                 else:
                     # Regular patterns (current -> current)
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_next = params_current
 
             elif layer == "end":
                 # End layer logic
                 if patternIndex == 0 and preParams is not None:
                     # First pattern transitions from previous layer
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_next = preParams.copy()
-                    params_next["pattern_bp1"] -= params_next["pattern_ppw"]
-                    params_next["pattern_bp3"] -= params_next["pattern_ppw"]
                     location = "start"
                 elif patternIndex > patternCount - 10:
                     # Last 9 patterns use modified current params
-                    params_current = params_current.copy()
+                    params_current = currentParams.copy()
                     params_current["pattern_twist"] = False
                     params_next = params_current
                     # Don't render front side for these patterns
@@ -781,6 +770,7 @@ class Pattern(QWidget):
                 # When not twisted: mirror along both X and Y axes
                 # This keeps back side aligned with front side's bottom half
                 mirror_x = params_current.get("pattern_ppw", 0) / 2
+                mirror_y = None
             
             shape = Calculate.Mirror(shape, mirror_x, mirror_y)
         
