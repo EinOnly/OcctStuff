@@ -75,124 +75,93 @@ class Layers(QWidget):
 
     @staticmethod
     def _compute_pattern(
-        currentParams: Dict[str, Any],
-        nextParams: Dict[str, Any],
+        preConfig: Dict[str, Any],
+        currentConfig: Dict[str, Any],
+        nextConfig: Dict[str, Any],
         color: str,
         layer_index: int,
         layer_label: str,
         offset: float,
-        location: str,
+        layer: str,
         front: bool,
         back: bool,
         index: int,
-        mirror: bool
+        count: int
     ) -> Dict[str, Any]:
         """
         Compute a single pattern and return the result.
         This is a static method suitable for parallel execution.
+        Front and back are generated independently by Pattern.
         """
-        pattern = Pattern.GetPattern(currentParams, nextParams, location)
-        metrics = {
-            "convexhull_area": pattern.get("convexhull_area", 0.0),
-            "pattern_area": pattern.get("pattern_area", 0.0),
-            "pattern_resistance": pattern.get("pattern_resistance", 0.0),
-        }
-
         result = {"front": None, "back": None}
-        shape = pattern.get("shape")
-
-        if shape is not None and len(shape) > 0:
-            if front:
+        
+        if front:
+            pattern = Pattern.GetPattern(
+                preConfig=preConfig,
+                currentConfig=currentConfig,
+                nextConfig=nextConfig,
+                side="front",
+                layer=layer,
+                layerIndex=layer_index,
+                patternIndex=index,
+                patternCount=count
+            )
+            
+            shape = pattern.get("shape")
+            if shape is not None and len(shape) > 0:
                 shape_offset = shape.copy()
                 shape_offset[:, 0] += offset
+                
+                metrics = {
+                    "convexhull_area": pattern.get("convexhull_area", 0.0),
+                    "pattern_area": pattern.get("pattern_area", 0.0),
+                    "pattern_resistance": pattern.get("pattern_resistance", 0.0),
+                }
+                
                 result["front"] = {
                     "shape": shape_offset,
                     "color": color,
                     "index": index,
                     "layer_index": layer_index,
                     "layer_label": layer_label,
-                    "location": location,
+                    "location": "normal",
                     "metrics": metrics,
                 }
 
-            if back:
-                shape_back = shape.copy()
-                mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
-                mirror_y = currentParams.get("pattern_pbh", 0)/2
-                shape_back = Calculate.Mirror(shape_back, mirror_x, mirror_y)
-                shape_back[:, 0] += offset
-                result["back"] = {
-                    "shape": shape_back,
-                    "color": color,
-                    "index": index,
-                    "layer_index": layer_index,
-                    "layer_label": layer_label,
-                    "location": location,
-                    "metrics": metrics,
-                }
-
-        return result
-
-    def _buildPattern(self,
-        layers: Dict[str, Any],
-        currentParams: Dict[str, Any],
-        nextParams: Dict[str, Any],
-        color: str,
-        layer_index: int,
-        layer_label: str,
-        offset: float = 0.0,
-        location: str = "normal",
-        front: bool = True,
-        back: bool = True,
-        index: int = 0,
-        mirror: bool = False
-    ):
-        pattern = Pattern.GetPattern(currentParams, nextParams, location)
-        metrics = {
-            "convexhull_area": pattern.get("convexhull_area", 0.0),
-            "pattern_area": pattern.get("pattern_area", 0.0),
-            "pattern_resistance": pattern.get("pattern_resistance", 0.0),
-        }
-
-        # Get shape and apply horizontal offset
-        shape = pattern.get("shape")
-        if shape is not None and len(shape) > 0:
-            if front:
+        if back:
+            pattern = Pattern.GetPattern(
+                preConfig=preConfig,
+                currentConfig=currentConfig,
+                nextConfig=nextConfig,
+                side="back",
+                layer=layer,
+                layerIndex=layer_index,
+                patternIndex=index,
+                patternCount=count
+            )
+            
+            shape = pattern.get("shape")
+            if shape is not None and len(shape) > 0:
                 shape_offset = shape.copy()
                 shape_offset[:, 0] += offset
-
-                layers["front"].append({
+                
+                metrics = {
+                    "convexhull_area": pattern.get("convexhull_area", 0.0),
+                    "pattern_area": pattern.get("pattern_area", 0.0),
+                    "pattern_resistance": pattern.get("pattern_resistance", 0.0),
+                }
+                
+                result["back"] = {
                     "shape": shape_offset,
                     "color": color,
                     "index": index,
                     "layer_index": layer_index,
                     "layer_label": layer_label,
-                    "location": location,
+                    "location": "normal",
                     "metrics": metrics,
-                })
+                }
 
-            if back:
-                shape_back = shape.copy()
-                # flip this pattern here
-                mirror_x = currentParams.get("pattern_ppw", 0)/2 if mirror else None
-                shape_back = Calculate.Mirror(shape_back, mirror_x, currentParams.get("pattern_pbh", 0)/2)
-
-                shape_back[:, 0] += offset
-                layers["back"].append({
-                    "shape": shape_back,
-                    "color": color,
-                    "index": index,
-                    "layer_index": layer_index,
-                    "layer_label": layer_label,
-                    "location": location,
-                    "metrics": metrics,
-                })
-
-        # Update progress if dialog exists
-        if self._progress_dialog is not None:
-            self._progress_current += 1
-            self._progress_dialog.setValue(self._progress_current)
-            QCoreApplication.processEvents()  # Allow UI to update
+        return result
 
     def _build_patterns_parallel(self, tasks: List[Dict[str, Any]], layers: Dict[str, Any]):
         """
@@ -258,45 +227,19 @@ class Layers(QWidget):
         for i in range(count):
             offset = start_offset + i * (ppw + psp)
 
-            # Reset back to default for each pattern
-            back = True
-            front = True
-            location = "normal"
-            currentParams = None
-            nextParams = None
-
-            # Handled the last pattern of each layer separately
-            if i == count - 1 and nextConfig is not None:
-                # Last pattern transitions to next layer
-                currentParams = currentConfig.get("layer", {}).copy()
-                nextParams = nextConfig.get("layer", {}).copy()
-                location = "end"
-            elif i < 8:
-                currentParams = currentConfig.get("layer", {}).copy()
-                currentParams["pattern_twist"] = False
-                currentParams["pattern_tp1"] += currentParams["pattern_ppw"] + currentParams["pattern_psp"]
-                nextParams = currentParams
-                back = False
-            else:
-                # Regular patterns (current -> current)
-                currentParams = currentConfig.get("layer", {})
-                nextParams = currentParams
-                back = True
-                if i == 8:
-                    back = False
-
             tasks.append({
-                "currentParams": currentParams,
-                "nextParams": nextParams,
+                "preConfig": None,
+                "currentConfig": currentConfig,
+                "nextConfig": nextConfig,
                 "color": color,
                 "layer_index": layer_index,
                 "layer_label": layer_label,
                 "offset": offset,
-                "location": location,
-                "front": front,
-                "back": back,
+                "layer": "begin",
+                "front": True,
+                "back": True,
                 "index": i,
-                "mirror": False
+                "count": count
             })
 
         # Execute all patterns in parallel
@@ -318,43 +261,19 @@ class Layers(QWidget):
         for i in range(count):
             offset = start_offset + i * (ppw + psp)
 
-            # Reset back to default for each pattern
-            back = True
-            front = True
-            location = "normal"
-            currentParams = None
-            nextParams = None
-
-            # Handled the last pattern of each layer separately
-            if i == 0 and preConfig is not None:
-                # First pattern transitions from previous layer
-                currentParams = currentConfig.get("layer", {}).copy()
-                nextParams = preConfig.get("layer", {}).copy()
-                location = "start"
-            elif i == count - 1 and nextConfig is not None:
-                # Last pattern transitions to next layer
-                currentParams = currentConfig.get("layer", {}).copy()
-                nextParams = nextConfig.get("layer", {}).copy()
-                location = "end"
-            else:
-                # Regular patterns (current -> current)
-                currentParams = currentConfig.get("layer", {}).copy()
-                nextParams = currentParams
-
-            mirror = not currentConfig.get("layer", {}).get("pattern_twist", True)
-
             tasks.append({
-                "currentParams": currentParams,
-                "nextParams": nextParams,
+                "preConfig": preConfig,
+                "currentConfig": currentConfig,
+                "nextConfig": nextConfig,
                 "color": color,
                 "layer_index": layer_index,
                 "layer_label": layer_label,
                 "offset": offset,
-                "location": location,
-                "front": front,
-                "back": back,
+                "layer": "mid",
+                "front": True,
+                "back": True,
                 "index": i,
-                "mirror": mirror
+                "count": count
             })
 
         # Execute all patterns in parallel
@@ -376,50 +295,25 @@ class Layers(QWidget):
         for i in range(count):
             offset = start_offset + i * (ppw + psp)
 
-            # Reset back to default for each pattern
-            back = True
-            front = True
-            mirror = False
-            location = "normal"
-            currentParams = None
-            nextParams = None
-
-            # Handled the last pattern of each layer separately
-            if i == 0 and preConfig is not None:
-                # First pattern transitions from previous layer
-                currentParams = currentConfig.get("layer", {}).copy()
-                nextParams = preConfig.get("layer", {}).copy()
-                location = "start"
-            elif i > count - 10:
-                currentParams = currentConfig.get("layer", {}).copy()
-                currentParams["pattern_twist"] = False
-                nextParams = currentParams
-                front = False
-                mirror = True
-            else:
-                # Regular patterns (current -> current)
-                currentParams = currentConfig.get("layer", {})
-                nextParams = currentParams
             tasks.append({
-                "currentParams": currentParams,
-                "nextParams": nextParams,
+                "preConfig": preConfig,
+                "currentConfig": currentConfig,
+                "nextConfig": None,
                 "color": color,
                 "layer_index": layer_index,
                 "layer_label": layer_label,
                 "offset": offset,
-                "location": location,
-                "front": front,
-                "back": back,
+                "layer": "end",
+                "front": True,
+                "back": True,
                 "index": i,
-                "mirror": mirror
+                "count": count
             })
 
         # Execute all patterns in parallel
         self._build_patterns_parallel(tasks, layers)
 
-        return start_offset + count * (ppw + psp)  # Return final offset for next layer
-
-    def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
+        return start_offset + count * (ppw + psp)  # Return final offset for next layer    def _export_layer_metrics(self, layers: Dict[str, Any], export_filename: str = "layer_metrics.csv"):
         """
         Export convex hull, pattern area, and resistance metrics for selected patterns.
         Samples indices [0, 9, 20, 52, 53] from each layer on both sides.

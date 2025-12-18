@@ -41,7 +41,18 @@ class Pattern(QWidget):
 
     def _refresh_pattern(self):
         params = self.read()
-        self.canvas.setPattern(Pattern.GetPattern(params, params, "normal"))
+        # For preview, use a simple mid-layer pattern
+        config = {"layer": params}
+        self.canvas.setPattern(Pattern.GetPattern(
+            preConfig=None,
+            currentConfig=config,
+            nextConfig=None,
+            side="front",
+            layer="mid",
+            layerIndex=0,
+            patternIndex=0,
+            patternCount=9
+        ))
 
     # ------------------------------------------------------------------
     # Signal callbacks
@@ -514,24 +525,135 @@ class Pattern(QWidget):
         )
 
     @staticmethod
-    def GetPattern(currentParams: Dict[str, Any], nextParams: Dict[str, Any], location:str = "normal") -> Dict[str, Any]:
-        """
+    def _empty_pattern() -> Dict[str, Any]:
+        """Return an empty pattern (used when a side shouldn't be rendered)."""
         return {
-            "bbox": {},
+            "bbox": np.array([], dtype=np.float64).reshape(0, 2),
             "assist": {},
-            "shape": {},
-            "convex": {},
+            "shape": np.array([], dtype=np.float64).reshape(0, 2),
+            "convexhull": np.array([], dtype=np.float64).reshape(0, 2),
+            "convexhull_area": 0.0,
+            "pattern_area": 0.0,
+            "pattern_resistance": 0.0,
         }
-        """
-        if currentParams is None or nextParams is None:
-            raise ValueError("Both currentParams and nextParams are required")
 
-        current_assist = Pattern._buildAssist(currentParams)
-        next_assist = Pattern._buildAssist(nextParams)
+    @staticmethod
+    def GetPattern(
+        preConfig: Dict[str, Any],
+        currentConfig: Dict[str, Any],
+        nextConfig: Dict[str, Any],
+        side: str = "front",
+        layer: str = "mid",
+        layerIndex: int = 0,
+        patternIndex: int = 0,
+        patternCount: int = 9
+    ) -> Dict[str, Any]:
+        """
+        Build a pattern based on layer context.
+        
+        Args:
+            preConfig: Configuration of previous layer (can be None)
+            currentConfig: Configuration of current layer
+            nextConfig: Configuration of next layer (can be None)
+            side: "front" or "back"
+            layer: "begin", "mid", or "end"
+            layerIndex: Index of current layer
+            patternIndex: Index of pattern within layer (0-based)
+            patternCount: Total number of patterns in this layer
+            
+        Returns:
+            Dictionary with bbox, assist, shape, convexhull, and metrics
+        """
+        if currentConfig is None:
+            raise ValueError("currentConfig is required")
+
+        # Extract layer parameters
+        currentParams = currentConfig.get("layer", {})
+        preParams = preConfig.get("layer", {}) if preConfig else None
+        nextParams = nextConfig.get("layer", {}) if nextConfig else None
+        
+        # Determine location and which params to use based on context
+        location = "normal"
+        params_current = None
+        params_next = None
+        
+        if layer == "begin":
+            # Start layer logic
+            if patternIndex == patternCount - 1 and nextParams is not None:
+                # Last pattern transitions to next layer
+                params_current = currentParams.copy()
+                params_next = nextParams.copy()
+                location = "end"
+            elif patternIndex < 8:
+                # First 8 patterns use modified current params
+                params_current = currentParams.copy()
+                params_current["pattern_twist"] = False
+                params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
+                params_next = params_current
+                # Don't render back side for these patterns
+                if side == "back":
+                    return Pattern._empty_pattern()
+            else:
+                # Regular patterns (current -> current)
+                params_current = currentParams
+                params_next = currentParams
+                # Pattern 8 doesn't render back side
+                if patternIndex == 8 and side == "back":
+                    return Pattern._empty_pattern()
+                    
+        elif layer == "mid":
+            # Normal layer logic
+            if patternIndex == 0 and preParams is not None:
+                # First pattern transitions from previous layer
+                params_current = currentParams.copy()
+                params_next = preParams.copy()
+                location = "start"
+            elif patternIndex == patternCount - 1 and nextParams is not None:
+                # Last pattern transitions to next layer
+                params_current = currentParams.copy()
+                params_next = nextParams.copy()
+                location = "end"
+            else:
+                # Regular patterns (current -> current)
+                params_current = currentParams.copy()
+                params_next = params_current
+                
+        elif layer == "end":
+            # End layer logic
+            if patternIndex == 0 and preParams is not None:
+                # First pattern transitions from previous layer
+                params_current = currentParams.copy()
+                params_next = preParams.copy()
+                location = "start"
+            elif patternIndex > patternCount - 10:
+                # Last 9 patterns use modified current params
+                params_current = currentParams.copy()
+                params_current["pattern_twist"] = False
+                params_next = params_current
+                # Don't render front side for these patterns
+                if side == "front":
+                    return Pattern._empty_pattern()
+            else:
+                # Regular patterns (current -> current)
+                params_current = currentParams
+                params_next = currentParams
+        
+        if params_current is None or params_next is None:
+            raise ValueError("Failed to determine pattern parameters")
+
+        current_assist = Pattern._buildAssist(params_current)
+        next_assist = Pattern._buildAssist(params_next)
         shape, outer_end_idx, top, bottom = Pattern._buildShape(current_assist, next_assist, location)
         
+        # Apply mirroring for back side
+        if side == "back":
+            mirror = not params_current.get("pattern_twist", True)
+            mirror_x = params_current.get("pattern_ppw", 0) / 2 if mirror else None
+            mirror_y = params_current.get("pattern_pbh", 0) / 2
+            shape = Calculate.Mirror(shape, mirror_x, mirror_y)
+        
         # convexhull = Pattern._buildConvexHull(top[0], bottom[0], current_assist.get("width", 0.0))
-        if currentParams.get("pattern_twist", False):
+        if params_current.get("pattern_twist", False):
             convexhull = Pattern._buildConvexHull(
                 Calculate.Mirror(bottom[0], None, current_assist.get("height", 0.0)/2)[::-1], 
                 bottom[0], 
@@ -554,7 +676,7 @@ class Pattern(QWidget):
             resistance = 0.0
 
         return {
-            "bbox": Pattern._buildBbox(currentParams),
+            "bbox": Pattern._buildBbox(params_current),
             "assist": current_assist,
             "shape": shape,
             "convexhull": convexhull,
