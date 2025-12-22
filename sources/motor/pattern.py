@@ -998,8 +998,8 @@ if __name__ == "__main__":
     from settings import layers_a, layers_b, layers_c
 
     # Use normal layer from settings (second layer in layers_b)
-    normal_layer_config = layers_a["layers"][1]
-    global_settings = layers_a["global"]
+    normal_layer_config = layers_c["layers"][1]
+    global_settings = layers_c["global"]
 
     # Create base params by merging layer config with global settings
     base_layer_params = normal_layer_config["layer"].copy()

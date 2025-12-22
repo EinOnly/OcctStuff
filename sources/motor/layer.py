@@ -354,10 +354,26 @@ class Layers(QWidget):
         # Sort by: layer_index (ascending), then side (back before front alphabetically, so reverse)
         all_data_rows.sort(key=lambda x: (x["layer_index"] or 0, x["side"]))
 
-        # Calculate overall average resistance
+        # Calculate overall averages
         average_rows: List[Dict[str, Any]] = []
         if all_resistances:
-            overall_avg = sum(all_resistances) / len(all_resistances)
+            # Collect all convexhull_area and pattern_area values
+            all_convexhull_areas = []
+            all_pattern_areas = []
+
+            for row in all_data_rows:
+                convexhull = row.get("convexhull_area")
+                pattern = row.get("pattern_area")
+                if convexhull not in ("", None):
+                    all_convexhull_areas.append(convexhull)
+                if pattern not in ("", None):
+                    all_pattern_areas.append(pattern)
+
+            # Calculate averages
+            overall_avg_resistance = sum(all_resistances) / len(all_resistances)
+            overall_avg_convexhull = sum(all_convexhull_areas) / len(all_convexhull_areas) if all_convexhull_areas else ""
+            overall_avg_pattern = sum(all_pattern_areas) / len(all_pattern_areas) if all_pattern_areas else ""
+
             average_rows.append({
                 "side": "overall",
                 "layer_index": "",
@@ -365,9 +381,9 @@ class Layers(QWidget):
                 "pattern_index": "AVG",
                 "location": "average",
                 "sampled_from": f"n={len(all_resistances)}",
-                "convexhull_area": "",
-                "pattern_area": "",
-                "pattern_resistance": overall_avg,
+                "convexhull_area": overall_avg_convexhull,
+                "pattern_area": overall_avg_pattern,
+                "pattern_resistance": overall_avg_resistance,
             })
 
         # Combine all rows: data sorted by layer, then overall average
