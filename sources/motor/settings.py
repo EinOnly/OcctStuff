@@ -3,8 +3,9 @@ layers_a = {
     "global": {
         "layer_psp": 0.05,
         "layer_ptc": 0.047,
-        "layer_pmd": "superelliptic",
+        "layer_pmd": "straight",
         "layer_mod": "even",
+        "layer_type": "wave",
     },
     "layers": [
         {
@@ -105,6 +106,7 @@ layers_b = {
         "layer_ptc": 0.047,
         "layer_pmd": "superelliptic",
         "layer_mod": "even",
+        "layer_type": "wave",
     },
     "layers": [
         {
@@ -183,6 +185,7 @@ layers_c = {
         "layer_ptc": 0.047,
         "layer_pmd": "superelliptic",
         "layer_mod": "even",
+        "layer_type": "wave",
     },
     "layers": [
         {

@@ -438,7 +438,7 @@ class Pattern(QWidget):
 
         # Get tp1, bp1 values
         tp1 = float(params.get("pattern_tp1", 0.0) or 0.0)
-        if params.get("pattern_twist", False):
+        if params.get("pattern_type", "wave") == "wave":
             bp1 = float(params.get("pattern_bp1", 0.0) or 0.0)
         else:
             bp1 = float(params.get("pattern_bp1", 0.0) or 0.0) - pattern_width/2 - float(params.get("pattern_psp", 0.0) or 0.0)/2

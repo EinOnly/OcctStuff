@@ -63,6 +63,7 @@ class PParams(QObject):
 
             # mode / twist
             "pattern_mode": "straight",     # straight | superelliptic
+            "pattern_type": "wave",         # wave | lap
             "pattern_twist": False,
             "pattern_symmetry": True,
         }
@@ -397,6 +398,7 @@ class LParams(QObject):
             "layer_pdc": 1,
             "layer_cfg": self._layers_config,
             "layer_mod": "even",       # even | gradual
+            "layer_type": "wave",      # wave | lap
             "layer_sel": 0,            # selected layer index
 
             # new: layer-driven bounding box + per-wave width
@@ -447,6 +449,8 @@ class LParams(QObject):
                 pparams_dict[key] = value
             elif key == "layer_pmd":
                 pparams_dict["pattern_mode"] = value
+            elif key == "layer_type":
+                pparams_dict["pattern_type"] = value
             elif key == "layer_pbw":
                 pparams_dict["pattern_pbw"] = value
             elif key == "layer_pbh":
@@ -539,6 +543,14 @@ class LParams(QObject):
             if pparams_dict:
                 self._p.update_bulk(pparams_dict, emit=True)
 
+    def _sync_config_global_param(self, key: str, value: Any):
+        """Update a global parameter in the configuration."""
+        layers_cfg = self._v.get("layer_cfg")
+        if not layers_cfg:
+            return
+        if isinstance(layers_cfg.get("global"), dict):
+            layers_cfg["global"][key] = value
+
     def _sync_config_pattern_mode(self, mode: str):
         """Ensure every layer config entry mirrors the active pattern mode."""
         layers_cfg = self._v.get("layer_cfg")
@@ -569,6 +581,11 @@ class LParams(QObject):
             mode = str(value)
             self._p.set("pattern_mode", mode)
             self._sync_config_pattern_mode(mode)
+        elif key == "layer_mod":
+            self._sync_config_global_param(key, value)
+        elif key == "layer_type":
+            self._p.set("pattern_type", str(value))
+            self._sync_config_global_param(key, value)
         elif key == "layer_pwt":
             self._p.set("pattern_twist", bool(value))
         elif key == "layer_psy":
@@ -598,6 +615,8 @@ class LParams(QObject):
         # sync back to layer for UI consistency
         if k == "pattern_mode":
             self.set("layer_pmd", v)
+        elif k == "pattern_type":
+            self.set("layer_type", v)
         elif k == "pattern_pbw":
             self.set("layer_pbw", v)
         elif k == "pattern_pbh":
@@ -846,11 +865,13 @@ class ParametersPanel(QWidget):
         g3.addWidget(QLabel("pattern width"), 3, 0); g3.addWidget(self.in_ppw, 3, 1)
 
         self.cmb_pmd = QComboBox(); self.cmb_mod = QComboBox(); self.cmb_sel = QComboBox()
+        self.cmb_type = QComboBox()
 
         g3.addWidget(QLabel("layer select"), 3, 2); g3.addWidget(self.cmb_sel, 3, 3)
 
         g3.addWidget(QLabel("pattern mode"), 4, 0); g3.addWidget(self.cmb_pmd, 4, 1)
         g3.addWidget(QLabel("layer mode"), 4, 2); g3.addWidget(self.cmb_mod, 4, 3)
+        g3.addWidget(QLabel("layer type"), 5, 0); g3.addWidget(self.cmb_type, 5, 1)
 
         # Create toggle buttons instead of checkboxes
         self.btn_pwt = QPushButton("Twist")
@@ -872,7 +893,7 @@ class ParametersPanel(QWidget):
         btn_layout.addWidget(self.btn_generate_layers)
 
         # Add button layout spanning full width (no label)
-        g3.addLayout(btn_layout, 5, 0, 1, 4)  # Span all 4 columns
+        g3.addLayout(btn_layout, 6, 0, 1, 4)  # Span all 4 columns
 
         layout.addWidget(gb_layer)
 
@@ -918,6 +939,7 @@ class ParametersPanel(QWidget):
             self.cmb_sel.setCurrentIndex(initial_idx)
         LPARAMS.comboRegister("layer_pmd", self.cmb_pmd, ["straight", "superelliptic"])
         LPARAMS.comboRegister("layer_mod", self.cmb_mod, ["even", "gradual"])
+        LPARAMS.comboRegister("layer_type", self.cmb_type, ["wave", "lap"])
         LPARAMS.toggleRegister("layer_pwt", self.btn_pwt)
         LPARAMS.toggleRegister("layer_psy", self.btn_psy)
 
