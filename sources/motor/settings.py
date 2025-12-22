@@ -198,7 +198,7 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 2.00,
+                "pattern_tnn": 1.20,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
@@ -220,12 +220,12 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 2.00,
+                "pattern_tnn": 1.20,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 0.6853,
-                "pattern_bnn": 2.00,
+                "pattern_bnn": 1.20,
                 "pattern_bmm": 1.2,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
@@ -242,12 +242,12 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 2.00,
+                "pattern_tnn": 1.20,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 0.6853,
-                "pattern_bnn": 2.00,
+                "pattern_bnn": 1.20,
                 "pattern_bmm": 1.2,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
