@@ -408,151 +408,166 @@ class Calculate:
 
     @classmethod
     def ResistanceAlongPath(cls,
-        curve: np.ndarray,
-        start_idx: int,
-        end_idx: int,
-        thick: float,
-        rho: float = 1.724e-8
+        curve: np.ndarray = None,
+        start_idx: int = 0,
+        end_idx: int = 0,
+        thick: float = 0.047,
+        rho: float = 1.724e-8,
+        inner_curve: np.ndarray = None,
+        outer_curve: np.ndarray = None
     ) -> float:
         """
         Calculate electrical resistance along the pattern boundary.
 
-        The curve is structured as [outer_path, inner_path]. This improved version
-        resamples the inner curve to match the outer curve's point count for accurate
-        width pairing, which is critical for curves with different point densities.
+        This function samples along the inner curve (current flow path) at fixed intervals,
+        measures the perpendicular width to the outer curve at each sample point,
+        and integrates resistance using R = ρ*L/S where L is arc length and S = width * thick.
 
         R = ρ ∫ (1/A(s)) ds where A(s) = w(s) × thick
 
         Args:
-            curve: Complete closed curve points (n x 2 array, in mm)
-            start_idx: Starting index of conductor path (usually 0)
-            end_idx: Ending index of conductor path (exclusive)
+            curve: (Legacy) Complete closed curve points (n x 2 array, in mm)
+            start_idx: (Legacy) Starting index of conductor path (usually 0)
+            end_idx: (Legacy) Ending index of conductor path (exclusive)
             thick: Thickness of the conductor (mm), default 0.047 mm
             rho: Electrical resistivity (Ω·m), default 1.724e-8 Ω·m for copper
+            inner_curve: Inner curve points (n x 2 array, in mm) - NEW preferred parameter
+            outer_curve: Outer curve points (m x 2 array, in mm) - NEW preferred parameter
 
         Returns:
             Resistance in Ohms
         """
-        if curve is None or len(curve) == 0:
+        # Support both old and new calling conventions
+        if inner_curve is not None and outer_curve is not None:
+            # New API: use inner_curve and outer_curve directly
+            inner = np.asarray(inner_curve, dtype=np.float64)
+            outer = np.asarray(outer_curve, dtype=np.float64)
+        elif curve is not None and len(curve) > 0:
+            # Legacy API: extract from curve using indices
+            if start_idx >= end_idx or end_idx > len(curve):
+                return 0.0
+            outer = np.asarray(curve[start_idx:end_idx], dtype=np.float64)
+            inner = np.asarray(curve[end_idx:], dtype=np.float64)
+        else:
             return 0.0
-        if start_idx >= end_idx or end_idx > len(curve):
-            return 0.0
-
-        # Extract outer path (conductor path) and inner path
-        outer = np.asarray(curve[start_idx:end_idx], dtype=np.float64)
-        inner = np.asarray(curve[end_idx:], dtype=np.float64)
 
         if len(outer) < 2 or len(inner) < 2:
             return 0.0
 
-        # Re-index so both sides start from the bottom seam (outer_end_idx)
-        outer = outer[::-1].copy()  # bottom -> top
-
-        def cumulative_lengths(pts: np.ndarray) -> np.ndarray:
-            """Calculate cumulative arc lengths along curve."""
-            if len(pts) < 2:
-                return np.array([0.0], dtype=np.float64)
-            diffs = pts[1:] - pts[:-1]
-            seg_lengths = np.linalg.norm(diffs, axis=1)
-            return np.concatenate(([0.0], np.cumsum(seg_lengths)))
-
-        def resample_curve(pts: np.ndarray, num_points: int) -> np.ndarray:
+        def find_perpendicular_width(pointA: np.ndarray, tangent: np.ndarray, outer_curve: np.ndarray) -> float:
             """
-            Resample curve to have exactly num_points by interpolating along arc length.
-            This ensures outer and inner curves have matching point counts for pairing.
+            Find width from pointA on inner to pointB on outer along perpendicular line.
+            Vectorized implementation checking both directions.
             """
-            if len(pts) == num_points:
-                return pts
+            # Normal perpendicular to tangent (right-hand rule: 90° rotation)
+            normal = np.array([tangent[1], -tangent[0]])
+            norm_len = np.linalg.norm(normal)
+            if norm_len < 1e-12:
+                # Degenerate tangent, use minimum distance
+                distances = np.linalg.norm(outer_curve - pointA, axis=1)
+                return np.min(distances)
 
-            cum_lengths = cumulative_lengths(pts)
-            total_length = cum_lengths[-1]
+            normal = normal / norm_len  # Normalize
 
-            if total_length < 1e-12:
-                # Degenerate curve, just repeat first point
-                return np.tile(pts[0], (num_points, 1))
+            # Prepare segment data
+            seg_starts = outer_curve[:-1]
+            seg_ends = outer_curve[1:]
+            seg_vecs = seg_ends - seg_starts
 
-            # Generate target arc lengths uniformly distributed
-            target_lengths = np.linspace(0, total_length, num_points)
-            resampled = np.zeros((num_points, 2), dtype=np.float64)
+            # Calculate determinants for all segments
+            # det = normal[1] * seg_vec.x - normal[0] * seg_vec.y
+            dets = normal[1] * seg_vecs[:, 0] - normal[0] * seg_vecs[:, 1]
 
-            for i, target in enumerate(target_lengths):
-                if target <= 0.0:
-                    resampled[i] = pts[0]
-                elif target >= total_length:
-                    resampled[i] = pts[-1]
-                else:
-                    # Find segment containing target
-                    idx = np.searchsorted(cum_lengths, target, side="right") - 1
-                    idx = max(0, min(idx, len(pts) - 2))
+            # Filter out parallel segments
+            valid_mask = np.abs(dets) > 1e-12
+            
+            if not np.any(valid_mask):
+                distances = np.linalg.norm(outer_curve - pointA, axis=1)
+                return np.min(distances)
 
-                    # Interpolate within segment
-                    seg_len = cum_lengths[idx + 1] - cum_lengths[idx]
-                    if seg_len < 1e-12:
-                        resampled[i] = pts[idx]
-                    else:
-                        t = (target - cum_lengths[idx]) / seg_len
-                        resampled[i] = pts[idx] + t * (pts[idx + 1] - pts[idx])
+            # Filter arrays
+            dets = dets[valid_mask]
+            seg_starts = seg_starts[valid_mask]
+            seg_vecs = seg_vecs[valid_mask]
 
-            return resampled
+            # Calculate t and s for all valid segments
+            dxs = seg_starts[:, 0] - pointA[0]
+            dys = seg_starts[:, 1] - pointA[1]
 
-        # CRITICAL FIX: Resample inner curve to match outer curve's point count
-        # This ensures proper 1-to-1 point pairing for width calculation
-        inner_resampled = resample_curve(inner, len(outer))
+            # t = (dy * seg_vec.x - dx * seg_vec.y) / det
+            ts = (dys * seg_vecs[:, 0] - dxs * seg_vecs[:, 1]) / dets
 
-        # Now outer and inner_resampled have the same number of points
-        # Calculate width vectors by direct pairing
-        width_vectors = inner_resampled - outer
+            # s = (normal.x * dy - normal.y * dx) / det
+            ss = (normal[0] * dys - normal[1] * dxs) / dets
 
-        tol = 1e-6
-        segment_data = []
-        valid_widths = []
+            # Find valid intersections (0 <= s <= 1)
+            intersection_mask = (ss >= 0) & (ss <= 1)
 
-        for i in range(len(outer) - 1):
-            p1 = outer[i]
-            p2 = outer[i + 1]
-            seg_vec = p2 - p1
-            ds = np.linalg.norm(seg_vec)
-            if ds < tol:
-                continue
-            tangent_dir = seg_vec / ds
-            normal_dir = np.array([-tangent_dir[1], tangent_dir[0]])
+            if not np.any(intersection_mask):
+                distances = np.linalg.norm(outer_curve - pointA, axis=1)
+                return np.min(distances)
 
-            # Calculate perpendicular widths
-            raw_w1 = abs(np.dot(width_vectors[i], normal_dir))
-            raw_w2 = abs(np.dot(width_vectors[i + 1], normal_dir))
+            # Get minimum absolute distance
+            valid_ts = ts[intersection_mask]
+            min_dist = np.min(np.abs(valid_ts))
 
-            # Fallback to Euclidean distance if perpendicular width is too small
-            if raw_w1 < tol:
-                raw_w1 = np.linalg.norm(width_vectors[i])
-            if raw_w2 < tol:
-                raw_w2 = np.linalg.norm(width_vectors[i + 1])
+            return min_dist
 
-            if raw_w1 > tol:
-                valid_widths.append(raw_w1)
-            if raw_w2 > tol:
-                valid_widths.append(raw_w2)
+        # Step 1: Calculate arc lengths for uniform sampling
+        diffs = inner[1:] - inner[:-1]
+        seg_lengths = np.linalg.norm(diffs, axis=1)
+        total_length = np.sum(seg_lengths)
 
-            segment_data.append((ds, raw_w1, raw_w2))
-
-        if not segment_data or not valid_widths:
+        if total_length < 1e-12:
             return 0.0
 
-        avg_width = float(np.mean(valid_widths))
-        thick_m = thick * 1e-3
-        integral = 0.0
+        # Step 2: Sample inner curve at equal intervals d
+        d = 0.01  # Sampling interval in mm
+        num_samples = max(100, int(total_length / d))
+        sample_arc_lengths = np.linspace(0, total_length, num_samples)
+        cum_lengths = np.concatenate(([0.0], np.cumsum(seg_lengths)))
 
-        for ds, raw_w1, raw_w2 in segment_data:
-            w1 = raw_w1 if raw_w1 > tol else avg_width
-            w2 = raw_w2 if raw_w2 > tol else avg_width
+        total_resistance = 0.0
+        rho_m = rho  # Already in Ω·m
+        thick_m = thick * 1e-3  # Convert mm to m
 
-            w1_m = w1 * 1e-3
-            w2_m = w2 * 1e-3
-            ds_m = ds * 1e-3
+        # Step 3: For each sample point on inner
+        for i in range(len(sample_arc_lengths) - 1):
+            arc_len = sample_arc_lengths[i]
+            d_segment = sample_arc_lengths[i + 1] - arc_len  # Segment length d (mm)
 
-            A1 = w1_m * thick_m
-            A2 = w2_m * thick_m
+            # Find pointA on inner curve at this arc length
+            if arc_len <= 0:
+                pointA = inner[0]
+                tangent = inner[1] - inner[0]
+            elif arc_len >= total_length:
+                pointA = inner[-1]
+                tangent = inner[-1] - inner[-2]
+            else:
+                idx = np.searchsorted(cum_lengths, arc_len, side='right') - 1
+                idx = max(0, min(idx, len(inner) - 2))
+                seg_len = cum_lengths[idx + 1] - cum_lengths[idx]
+                if seg_len < 1e-12:
+                    pointA = inner[idx]
+                    tangent = inner[idx + 1] - inner[idx]
+                else:
+                    t = (arc_len - cum_lengths[idx]) / seg_len
+                    pointA = inner[idx] + t * (inner[idx + 1] - inner[idx])
+                    tangent = inner[idx + 1] - inner[idx]
 
-            integral += 0.5 * (1.0 / A1 + 1.0 / A2) * ds_m
+            # Find perpendicular width l from pointA to outer
+            l = find_perpendicular_width(pointA, tangent, outer)
 
-        resistance = rho * integral
-        return resistance
+            if l < 1e-6:  # Skip if width is too small
+                continue
+
+            # Calculate segment resistance: R = ρ*d/(thick*l)
+            # Convert to SI units: d and l are in mm, thick is in mm
+            d_m = d_segment * 1e-3  # Convert mm to m
+            l_m = l * 1e-3          # Convert mm to m
+
+            # R = ρ * L / A, where L = d, A = thick * l
+            R_segment = rho_m * d_m / (thick_m * l_m)
+            total_resistance += R_segment
+
+        return total_resistance

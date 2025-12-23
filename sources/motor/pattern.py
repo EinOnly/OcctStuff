@@ -790,11 +790,18 @@ class Pattern(QWidget):
             )
         
         # Calculate resistance along outer curve (without twist)
-        if len(shape) > 0:
+        if len(shape) > 0 and outer_end_idx > 0:
             # Thickness: 0.047 mm (copper foil standard)
             thickness = 0.047
-            # Calculate resistance from index 0 to outer_end_idx
-            resistance = Calculate.ResistanceAlongPath(shape, 0, outer_end_idx, thickness)
+            # Split shape into outer and inner curves
+            outer_curve = shape[0:outer_end_idx]
+            inner_curve = shape[outer_end_idx:]
+            # Calculate resistance using new API with separate curves
+            resistance = Calculate.ResistanceAlongPath(
+                thick=thickness,
+                inner_curve=inner_curve,
+                outer_curve=outer_curve
+            )
         else:
             resistance = 0.0
 
@@ -998,8 +1005,8 @@ if __name__ == "__main__":
     from settings import layers_a, layers_b, layers_c
 
     # Use normal layer from settings (second layer in layers_b)
-    normal_layer_config = layers_c["layers"][1]
-    global_settings = layers_c["global"]
+    normal_layer_config = layers_b["layers"][1]
+    global_settings = layers_b["global"]
 
     # Create base params by merging layer config with global settings
     base_layer_params = normal_layer_config["layer"].copy()

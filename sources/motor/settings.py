@@ -19,12 +19,12 @@ layers_a = {
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 2.1742,
                 "pattern_tnn": 2.00,
-                "pattern_tmm": 0.60,
+                "pattern_tmm": 0.80,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 2.1742,
                 "pattern_bnn": 2.00,
-                "pattern_bmm": 0.60,
+                "pattern_bmm": 0.80,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
                 "color": "#f6473e",
@@ -41,12 +41,12 @@ layers_a = {
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 2.1742,
                 "pattern_tnn": 2.00,
-                "pattern_tmm": 0.60,
+                "pattern_tmm": 0.80,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 2.1742,
                 "pattern_bnn": 2.00,
-                "pattern_bmm": 0.60,
+                "pattern_bmm": 0.80,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
                 "color": "#ffca28",
@@ -63,12 +63,12 @@ layers_a = {
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 2.1742,
                 "pattern_tnn": 2.00,
-                "pattern_tmm": 0.60,
+                "pattern_tmm": 0.80,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 2.1742,
                 "pattern_bnn": 2.00,
-                "pattern_bmm": 0.60,
+                "pattern_bmm": 0.80,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
                 "color": "#28ff4c",
@@ -85,12 +85,12 @@ layers_a = {
                 "pattern_tp0": 0.00,
                 "pattern_tp3": 2.1742,
                 "pattern_tnn": 2.00,
-                "pattern_tmm": 0.60,
+                "pattern_tmm": 0.80,
                 # bottom parameters
                 "pattern_bp0": 0.00,
                 "pattern_bp3": 2.1742,
                 "pattern_bnn": 2.00,
-                "pattern_bmm": 0.60,
+                "pattern_bmm": 0.80,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
                 "color": "#5885f8",
@@ -104,7 +104,7 @@ layers_b = {
     "global": {
         "layer_psp": 0.1,
         "layer_ptc": 0.047,
-        "layer_pmd": "superelliptic",
+        "layer_pmd": "straight",
         "layer_mod": "even",
         "layer_type": "lap",
     },
@@ -198,7 +198,7 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 1.20,
+                "pattern_tnn": 2.00,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
@@ -220,12 +220,12 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 1.20,
+                "pattern_tnn": 2.00,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 0.6853,
-                "pattern_bnn": 1.20,
+                "pattern_bnn": 2.00,
                 "pattern_bmm": 1.2,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
@@ -242,12 +242,12 @@ layers_c = {
                 # top parameters
                 "pattern_tp0": 0.0,
                 "pattern_tp3": 0.6853,
-                "pattern_tnn": 1.20,
+                "pattern_tnn": 2.00,
                 "pattern_tmm": 1.2,
                 # bottom parameters
                 "pattern_bp0": 0.0,
                 "pattern_bp3": 0.6853,
-                "pattern_bnn": 1.20,
+                "pattern_bnn": 2.00,
                 "pattern_bmm": 1.2,
                 "pattern_twist": True,
                 "pattern_symmetry": True,
@@ -278,7 +278,6 @@ layers_c = {
         },
     ],
 }
-
 
 # {
 #     "pattern_tp0": 0.0,
