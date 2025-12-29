@@ -94,16 +94,17 @@ class Pattern(QWidget):
             result = curve_arr[::-1]  # Reverse
             
             # The superellipse curve ends at (0, height - radius).
-            # We need to extend it down to (0, height/2) with a vertical line segment
+            # We need to extend it down to (0, height/2 + tp3) with a vertical line segment
             # to ensure the middle section is perfectly parallel.
-            mid_y = height / 2.0
+            tp3 = assist.get("tp3", 0.0)
+            mid_y = height / 2.0 + tp3
             curve_end_y = result[-1][1] if len(result) > 0 else mid_y
             
             if len(result) > 0 and curve_end_y > mid_y:
-                # Add a vertical line segment from curve end to (0, height/2)
+                # Add a vertical line segment from curve end to (0, mid_y)
                 # Ensure the last point of superellipse is at x=0
                 result[-1][0] = 0.0
-                # Add the endpoint at (0, height/2)
+                # Add the endpoint at (0, mid_y)
                 endpoint = np.array([[0.0, mid_y]], dtype=np.float64)
                 result = np.vstack([result, endpoint])
             elif len(result) > 0:
@@ -175,16 +176,17 @@ class Pattern(QWidget):
             curve_arr = np.array(curve_points, dtype=np.float64)
             result = curve_arr[::-1][1:]  # Reverse and skip first (originally last)
             
-            # The superellipse curve starts at (0, radius).
-            # We need to extend it up from (0, height/2) with a vertical line segment
+            # The superellipse curve starts at (0, radi - bp3) with a vertical line segment
             # to ensure the middle section is perfectly parallel.
-            mid_y = height / 2.0
+            bp3 = assist.get("bp3", 0.0)
+            mid_y = height / 2.0 - bp3
             curve_start_y = result[0][1] if len(result) > 0 else mid_y
             
             if len(result) > 0 and curve_start_y < mid_y:
-                # Add a vertical line segment from (0, height/2) to curve start
+                # Add a vertical line segment from (0, mid_y) to curve start
                 # Ensure the first point of superellipse is at x=0
                 result[0][0] = 0.0
+                # Add the start point at (0, mid_y
                 # Add the start point at (0, height/2)
                 startpoint = np.array([[0.0, mid_y]], dtype=np.float64)
                 result = np.vstack([startpoint, result])
@@ -518,6 +520,8 @@ class Pattern(QWidget):
             "pwidth": pattern_width,
             "max_tx": tp1,
             "max_bx": bp1,
+            "tp3": tp3,
+            "bp3": bp3,
             "spacing": float(params.get("pattern_psp", 0.0) or 0.0),
             "vclamp": vertical_clamp,
             "hclamp": horizontal_clamp,
@@ -1000,58 +1004,81 @@ if __name__ == "__main__":
     import sys
     import os
 
-    # Add parent directory to path to import settings
+    # Add parent directory to path to import settings and parameters
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from settings import layers_a, layers_b, layers_c
+    from settings import layers_c as layers  # type: ignore
+    from parameters import PParams
 
     # Use normal layer from settings (second layer in layers_b)
-    normal_layer_config = layers_b["layers"][1]
-    global_settings = layers_b["global"]
+    normal_layer_config = layers["layers"][1]
+    global_settings = layers["global"]
 
-    # Create base params by merging layer config with global settings
-    base_layer_params = normal_layer_config["layer"].copy()
+    # Create a PParams instance to apply constraints
+    pparams = PParams()
 
-    # Add global settings with pattern_ prefix (this is how Pattern._buildAssist expects them)
-    base_layer_params["pattern_psp"] = global_settings["layer_psp"]
-    base_layer_params["pattern_mode"] = global_settings["layer_pmd"]
+    # Prepare parameters to update in bulk
+    params_to_update = {}
 
-    # _buildAssist expects pattern_pbw/pbh/ppw instead of layer_pbw/pbh/ppw
-    # Add these mappings
-    base_layer_params["pattern_pbw"] = base_layer_params["layer_pbw"]
-    base_layer_params["pattern_pbh"] = base_layer_params["layer_pbh"]
-    base_layer_params["pattern_ppw"] = base_layer_params["layer_ppw"]
-    base_layer_params["pattern_twist"] = False
+    # First set the mode and dimensions (these affect constraint bounds)
+    params_to_update["pattern_mode"] = global_settings["layer_pmd"]
+    params_to_update["pattern_type"] = global_settings.get("layer_type", "wave")
+    params_to_update["pattern_pbw"] = normal_layer_config["layer"]["layer_pbw"]
+    params_to_update["pattern_pbh"] = normal_layer_config["layer"]["layer_pbh"]
+    params_to_update["pattern_ppw"] = normal_layer_config["layer"]["layer_ppw"]
+    params_to_update["pattern_psp"] = global_settings["layer_psp"]
+    params_to_update["pattern_twist"] = normal_layer_config["layer"].get("pattern_twist", False)
+    params_to_update["pattern_symmetry"] = normal_layer_config["layer"].get("pattern_symmetry", False)
+
+    # Then set the shape parameters
+    params_to_update["pattern_tp0"] = normal_layer_config["layer"].get("pattern_tp0", 0.0)
+    params_to_update["pattern_tp3"] = normal_layer_config["layer"].get("pattern_tp3", 0.0)
+    params_to_update["pattern_tnn"] = normal_layer_config["layer"].get("pattern_tnn", 2.0)
+    params_to_update["pattern_tmm"] = normal_layer_config["layer"].get("pattern_tmm", 2.0)
+    params_to_update["pattern_bp0"] = normal_layer_config["layer"].get("pattern_bp0", 0.0)
+    params_to_update["pattern_bp3"] = normal_layer_config["layer"].get("pattern_bp3", 0.0)
+    params_to_update["pattern_bnn"] = normal_layer_config["layer"].get("pattern_bnn", 2.0)
+    params_to_update["pattern_bmm"] = normal_layer_config["layer"].get("pattern_bmm", 2.0)
+
+    # Apply all parameters through PParams constraint system
+    pparams.update_bulk(params_to_update, emit=False)
+
+    # Get the constrained parameters
+    base_layer_params = pparams.snapshot()
 
     print("Testing pattern parameter variations...")
     print(f"Base parameters: {base_layer_params}")
 
     # Test 1: Straight mode - pattern_tp3 + pattern_bp3 from (ppw, pbh/2 - ppw)
     print("\n=== Test 1: Straight mode - tp3 + bp3 variation ===")
-    layer_pbh = base_layer_params["layer_pbh"]
-    layer_pbw = base_layer_params["layer_pbw"]
-    layer_ppw = base_layer_params["layer_ppw"]
+    layer_pbh = base_layer_params["pattern_pbh"]
+    layer_pbw = base_layer_params["pattern_pbw"]
+    layer_ppw = base_layer_params["pattern_ppw"]
     min_tp3_bp3 = layer_ppw
     max_tp3_bp3 = layer_pbh / 2.0 - layer_ppw
-    test1_params = base_layer_params.copy()
-    test1_params["pattern_mode"] = "straight"
-    test1_params["pattern_twist"] = False  # Disable twist for straight mode
-    # Set tp1, bp1 and bp2 for straight mode - need reasonable values
-    test1_params["pattern_tp1"] = layer_pbw / 2.0  # Use half width
-    test1_params["pattern_bp1"] = layer_pbw / 2.0
-    test1_params["pattern_bp2"] = 0.0
+
+    # Create a fresh PParams instance for Test 1
+    test1_pparams = PParams()
+    test1_pparams.update_bulk({
+        "pattern_mode": "straight",
+        "pattern_pbw": layer_pbw,
+        "pattern_pbh": layer_pbh,
+        "pattern_ppw": layer_ppw,
+        "pattern_psp": base_layer_params["pattern_psp"],
+        "pattern_twist": False,
+        "pattern_symmetry": base_layer_params["pattern_symmetry"],
+        "pattern_type": base_layer_params["pattern_type"],
+        "pattern_tp0": 0.0,
+        "pattern_bp0": 0.0,
+    }, emit=False)
 
     tp3_bp3_values = np.arange(min_tp3_bp3, max_tp3_bp3 + 0.1, 0.1)
     test1_resistances = []
     test1_areas = []
 
     for value in tp3_bp3_values:
-        params = test1_params.copy()
-        params["pattern_tp3"] = value
-        # For symmetry: if top goes to height/2 + tp3, bottom should go to height/2 - tp3
-        params["pattern_bp3"] = value
-        # bp1 and tp1 should be the same for symmetry
-        params["pattern_tp1"] = layer_pbw / 2.0
-        params["pattern_bp1"] = layer_pbw / 2.0
+        # Update only tp3, let constraints handle the rest
+        test1_pparams.set("pattern_tp3", value, emit=False)
+        params = test1_pparams.snapshot()
 
         # Build pattern
         config = {"layer": params}
@@ -1071,26 +1098,36 @@ if __name__ == "__main__":
 
     # Test 2: Superellipse mode - pattern_tmm == pattern_bmm from (0.5, 2)
     print("\n=== Test 2: Superellipse mode - tmm == bmm variation ===")
-    test2_params = base_layer_params.copy()
-    test2_params["pattern_mode"] = "superelliptic"
-    test2_params["pattern_tnn"] = 2.0
-    test2_params["pattern_bnn"] = 2.0
-    # Use the same tp1/bp1 as Test 1
-    test2_params["pattern_tp1"] = layer_pbw / 2.0
-    test2_params["pattern_bp1"] = layer_pbw / 2.0
-    test2_params["pattern_bp2"] = layer_ppw  # Set bp2 to ppw like straight mode
-    # Set tp3 and bp3 to be in the middle of the valid range
-    test2_params["pattern_tp3"] = (min_tp3_bp3 + max_tp3_bp3) / 2.0
-    test2_params["pattern_bp3"] = (min_tp3_bp3 + max_tp3_bp3) / 2.0
+
+    # Create a fresh PParams instance for Test 2
+    test2_pparams = PParams()
+    test2_pparams.update_bulk({
+        "pattern_mode": "superelliptic",
+        "pattern_pbw": layer_pbw,
+        "pattern_pbh": layer_pbh,
+        "pattern_ppw": layer_ppw,
+        "pattern_psp": base_layer_params["pattern_psp"],
+        "pattern_twist": base_layer_params["pattern_twist"],
+        "pattern_symmetry": base_layer_params["pattern_symmetry"],
+        "pattern_type": base_layer_params["pattern_type"],
+        "pattern_tp0": 0.0,
+        "pattern_tp3": (min_tp3_bp3 + max_tp3_bp3) / 2.0,
+        "pattern_tnn": 2.0,
+        "pattern_bnn": 2.0,
+        "pattern_bp0": 0.0,
+    }, emit=False)
 
     mm_values = np.arange(0.5, 2.05, 0.05)
     test2_resistances = []
     test2_areas = []
 
     for value in mm_values:
-        params = test2_params.copy()
-        params["pattern_tmm"] = value
-        params["pattern_bmm"] = value
+        # Update tmm and bmm together
+        test2_pparams.update_bulk({
+            "pattern_tmm": value,
+            "pattern_bmm": value
+        }, emit=False)
+        params = test2_pparams.snapshot()
 
         # Build pattern
         config = {"layer": params}
@@ -1122,13 +1159,13 @@ if __name__ == "__main__":
         min_shape = min_pattern['shape']
         if len(min_shape) > 0:
             ax.fill(min_shape[:, 0], min_shape[:, 1],
-                   color='lightblue', alpha=0.6, edgecolor='blue', linewidth=1.5, label='Min')
+                    color='lightblue', alpha=0.6, edgecolor='blue', linewidth=1.5, label='Min')
 
         # Plot max pattern (red)
         max_shape = max_pattern['shape']
         if len(max_shape) > 0:
             ax.fill(max_shape[:, 0], max_shape[:, 1],
-                   color='lightcoral', alpha=0.6, edgecolor='red', linewidth=1.5, label='Max')
+                    color='lightcoral', alpha=0.6, edgecolor='red', linewidth=1.5, label='Max')
 
         ax.legend(loc='upper right', fontsize=9)
         ax.grid(True, alpha=0.2)
@@ -1136,9 +1173,8 @@ if __name__ == "__main__":
         ax.set_ylabel('Height (mm)', fontsize=9)
 
     # Generate extreme patterns for Test 1
-    test1_min_params = test1_params.copy()
-    test1_min_params["pattern_tp3"] = tp3_bp3_values[0]
-    test1_min_params["pattern_bp3"] = tp3_bp3_values[0]
+    test1_pparams.set("pattern_tp3", tp3_bp3_values[0], emit=False)
+    test1_min_params = test1_pparams.snapshot()
     test1_min_pattern = Pattern.GetPattern(
         preConfig=None,
         currentConfig={"layer": test1_min_params},
@@ -1146,9 +1182,8 @@ if __name__ == "__main__":
         side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
     )
 
-    test1_max_params = test1_params.copy()
-    test1_max_params["pattern_tp3"] = tp3_bp3_values[-1]
-    test1_max_params["pattern_bp3"] = tp3_bp3_values[-1]
+    test1_pparams.set("pattern_tp3", tp3_bp3_values[-1], emit=False)
+    test1_max_params = test1_pparams.snapshot()
     test1_max_pattern = Pattern.GetPattern(
         preConfig=None,
         currentConfig={"layer": test1_max_params},
@@ -1159,7 +1194,7 @@ if __name__ == "__main__":
     # Row 1, Col 1: Test 1 pattern shapes
     ax_shape1 = fig.add_subplot(gs[0, 0])
     plot_pattern_shapes(ax_shape1, test1_min_pattern, test1_max_pattern,
-                       f'Straight Mode Shapes\nMin: tp3={tp3_bp3_values[0]:.1f}mm, Max: tp3={tp3_bp3_values[-1]:.1f}mm')
+                    f'Straight Mode Shapes\nMin: tp3={tp3_bp3_values[0]:.1f}mm, Max: tp3={tp3_bp3_values[-1]:.1f}mm')
 
     # Row 1, Col 2: Test 1 curves
     ax1 = fig.add_subplot(gs[0, 1])
@@ -1184,9 +1219,11 @@ if __name__ == "__main__":
             ax1_twin.annotate(f'{a:.1f}', (x, a), textcoords="offset points", xytext=(0, -10), ha='center', fontsize=8, color=color2)
 
     # Generate extreme patterns for Test 2
-    test2_min_params = test2_params.copy()
-    test2_min_params["pattern_tmm"] = mm_values[0]
-    test2_min_params["pattern_bmm"] = mm_values[0]
+    test2_pparams.update_bulk({
+        "pattern_tmm": mm_values[0],
+        "pattern_bmm": mm_values[0]
+    }, emit=False)
+    test2_min_params = test2_pparams.snapshot()
     test2_min_pattern = Pattern.GetPattern(
         preConfig=None,
         currentConfig={"layer": test2_min_params},
@@ -1194,9 +1231,11 @@ if __name__ == "__main__":
         side="front", layer="mid", layerIndex=0, patternIndex=1, patternCount=9
     )
 
-    test2_max_params = test2_params.copy()
-    test2_max_params["pattern_tmm"] = mm_values[-1]
-    test2_max_params["pattern_bmm"] = mm_values[-1]
+    test2_pparams.update_bulk({
+        "pattern_tmm": mm_values[-1],
+        "pattern_bmm": mm_values[-1]
+    }, emit=False)
+    test2_max_params = test2_pparams.snapshot()
     test2_max_pattern = Pattern.GetPattern(
         preConfig=None,
         currentConfig={"layer": test2_max_params},

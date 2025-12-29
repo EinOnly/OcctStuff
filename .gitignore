@@ -9,10 +9,15 @@ __pycache__/
 *.pyd
 *.stp
 *.STEP
-*.DS_Store
 .DS_Store
 *.csv
 *.png
 *.log
 *.dxf
 *.bwg
+*.stl
+*.obj
+*.3mf
+*.bak
+*.tmp
+*.old

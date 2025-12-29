@@ -18,7 +18,7 @@ def main():
     CORELOG.info("make all...")
     _, ax = plt.subplots(dpi=100)
     CORELOG.info("Gen shapes...")
-    shapeA, points = plateA.make(canvas=ax)
+    shapeA, points = plateA.make(canvas=ax, move=1)
     # shapeB,_ = plateB.make(canvas=ax, point=points, offset=True, transform=True)
     CORELOG.info("Starting GUI...")
     app = QApplication(sys.argv)

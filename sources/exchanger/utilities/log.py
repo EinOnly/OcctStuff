@@ -11,9 +11,10 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 
 COLORLOG.configure(handlers=
-    [{"sink": sys.stdout, 
-      "level": "DEBUG", 
-      "format": "<level>{message}</level>"}, 
+    [
+        {"sink": sys.stdout, 
+        "level": "DEBUG", 
+        "format": "<level>{message}</level>"}, 
     #  {"sink": "./Logcache/DemoLog{time:YYYY-MM}.log", 
     #   "level": "DEBUG", 
     #   "rotation": "10 MB", 

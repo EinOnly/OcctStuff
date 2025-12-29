@@ -11,11 +11,10 @@ import sys
 import os
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+# Add parent directory to path (sources/motor/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pattern import Pattern
-from settings import layers_c
+from settings import layers_a as layers
 
 
 def find_params_for_target_area(
@@ -43,11 +42,30 @@ def find_params_for_target_area(
 
     layer_pbh = params["layer_pbh"]
     layer_ppw = params["layer_ppw"]
+    layer_pbw = params.get("layer_pbw", params.get("pattern_pbw", 6.0))
+
+    # Ensure all required pattern parameters are set
+    if "pattern_tp1" not in params or params["pattern_tp1"] is None:
+        params["pattern_tp1"] = layer_pbw / 2.0
+    if "pattern_bp1" not in params or params["pattern_bp1"] is None:
+        params["pattern_bp1"] = layer_pbw / 2.0
+
+    # Ensure tp0/bp0 are set (starting point)
+    if "pattern_tp0" not in params:
+        params["pattern_tp0"] = 0.0
+    if "pattern_bp0" not in params:
+        params["pattern_bp0"] = 0.0
+
+    # Ensure nn parameters are set
+    if "pattern_tnn" not in params:
+        params["pattern_tnn"] = 2.0
+    if "pattern_bnn" not in params:
+        params["pattern_bnn"] = 2.0
 
     if mode == "straight":
         # For straight mode, vary tp3 (and bp3 for symmetry)
         # Note: larger tp3 -> larger area (direct relationship)
-        min_val = layer_ppw
+        min_val = 0.1  # Allow smaller amplitude
         max_val = layer_pbh / 2.0 - layer_ppw
 
         # Binary search for tp3 value that gives target area
@@ -87,8 +105,8 @@ def find_params_for_target_area(
     elif mode == "superelliptic":
         # For superellipse, vary tmm (and bmm for symmetry)
         # Note: larger mm -> smaller area (inverse relationship)
-        min_mm = 0.5
-        max_mm = 2.0
+        min_mm = 0.2  # Expanded range: 0.2 to 6.0
+        max_mm = 6.0
 
         # Binary search for mm value that gives target area
         low, high = min_mm, max_mm
@@ -150,7 +168,7 @@ def generate_comparison_data(base_params: dict, num_points: int = 20):
     straight_params["pattern_bp1"] = layer_pbw / 2.0
 
     # Min area: tp3 = ppw (smallest vertical displacement)
-    min_tp3 = layer_ppw
+    min_tp3 = 0.1
     straight_params["pattern_tp3"] = min_tp3
     straight_params["pattern_bp3"] = min_tp3
     config = {"layer": straight_params}
@@ -195,9 +213,9 @@ def generate_comparison_data(base_params: dict, num_points: int = 20):
     superellipse_params["pattern_tp2"] = 2.0
     superellipse_params["pattern_bp2"] = 2.0
 
-    # Min area: mm = 2.0 (smallest for superellipse)
-    superellipse_params["pattern_tmm"] = 2.0
-    superellipse_params["pattern_bmm"] = 2.0
+    # Min area: mm = 6.0 (smallest for superellipse)
+    superellipse_params["pattern_tmm"] = 6.0
+    superellipse_params["pattern_bmm"] = 6.0
     config = {"layer": superellipse_params}
     pattern_min_super = Pattern.GetPattern(
         preConfig=None,
@@ -211,9 +229,9 @@ def generate_comparison_data(base_params: dict, num_points: int = 20):
     )
     super_min_area = pattern_min_super["convexhull_area"]
 
-    # Max area: mm = 0.5 (largest for superellipse)
-    superellipse_params["pattern_tmm"] = 0.5
-    superellipse_params["pattern_bmm"] = 0.5
+    # Max area: mm = 0.2 (largest for superellipse)
+    superellipse_params["pattern_tmm"] = 0.2
+    superellipse_params["pattern_bmm"] = 0.2
     config = {"layer": superellipse_params}
     pattern_max_super = Pattern.GetPattern(
         preConfig=None,
@@ -236,7 +254,8 @@ def generate_comparison_data(base_params: dict, num_points: int = 20):
     print(f"Overlapping area range: {min_area:.4f} to {max_area:.4f} mm²")
 
     # Generate target areas
-    target_areas = np.linspace(min_area, max_area, num_points)
+    # Skip first 5 points to avoid edge cases at minimum area
+    target_areas = np.linspace(min_area, max_area, num_points)[5:]
 
     areas = []
     straight_resistances = []
@@ -370,29 +389,62 @@ def main():
     print("=" * 70)
 
     # Load base configuration from settings
-    normal_layer_config = layers_c["layers"][1]
-    global_settings = layers_c["global"]
+    # Use first normal layer (index 0 or 1 depending on whether there's a start layer)
+    layers_list = layers["layers"]
+    normal_layer_config = None
+    for layer_config in layers_list:
+        if layer_config.get("type") == "normal":
+            normal_layer_config = layer_config
+            break
+
+    # Fallback to first layer if no normal layer found
+    if normal_layer_config is None:
+        normal_layer_config = layers_list[0]
+
+    global_settings = layers["global"]
 
     # Create base params by merging layer config with global settings
     base_layer_params = normal_layer_config["layer"].copy()
 
-    # Add global settings
+    # Add global settings with proper parameter names
     base_layer_params["pattern_psp"] = global_settings["layer_psp"]
     base_layer_params["pattern_mode"] = global_settings["layer_pmd"]
+    base_layer_params["layer_psp"] = global_settings["layer_psp"]
+    base_layer_params["layer_pmd"] = global_settings["layer_pmd"]
+    base_layer_params["layer_ptc"] = global_settings.get("layer_ptc", 0.047)
 
-    # Add required mappings
+    # Copy layer-specific parameters to pattern parameters
     base_layer_params["pattern_pbw"] = base_layer_params["layer_pbw"]
     base_layer_params["pattern_pbh"] = base_layer_params["layer_pbh"]
     base_layer_params["pattern_ppw"] = base_layer_params["layer_ppw"]
-    base_layer_params["pattern_twist"] = False
-    base_layer_params["pattern_type"] = "wave"
+
+    # Copy pattern parameters from layer config (they may already exist)
+    base_layer_params["pattern_twist"] = base_layer_params.get("pattern_twist", False)
+    base_layer_params["pattern_symmetry"] = base_layer_params.get("pattern_symmetry", True)
+
+    # Set pattern type from global settings
+    base_layer_params["pattern_type"] = global_settings.get("layer_type", "wave")
 
     # Set common parameters for fair comparison
     layer_pbw = base_layer_params["layer_pbw"]
-    base_layer_params["pattern_tp1"] = layer_pbw / 2.0
-    base_layer_params["pattern_bp1"] = layer_pbw / 2.0
-    base_layer_params["pattern_tnn"] = 2.0
-    base_layer_params["pattern_bnn"] = 2.0
+
+    # Use existing tp1/bp1 if present, otherwise calculate from pbw
+    if "pattern_tp1" not in base_layer_params:
+        base_layer_params["pattern_tp1"] = layer_pbw / 2.0
+    if "pattern_bp1" not in base_layer_params:
+        base_layer_params["pattern_bp1"] = layer_pbw / 2.0
+
+    # Use existing nn values if present
+    if "pattern_tnn" not in base_layer_params:
+        base_layer_params["pattern_tnn"] = 2.0
+    if "pattern_bnn" not in base_layer_params:
+        base_layer_params["pattern_bnn"] = 2.0
+
+    # Ensure tp0/bp0 are set
+    if "pattern_tp0" not in base_layer_params:
+        base_layer_params["pattern_tp0"] = 0.0
+    if "pattern_bp0" not in base_layer_params:
+        base_layer_params["pattern_bp0"] = 0.0
 
     print(f"\nBase parameters:")
     print(f"  Bounding box: {base_layer_params['layer_pbw']:.2f} × {base_layer_params['layer_pbh']:.2f} mm")
@@ -402,7 +454,7 @@ def main():
     # Generate comparison data
     print("\nGenerating comparison data...")
     areas, straight_resistances, superellipse_resistances = generate_comparison_data(
-        base_layer_params, num_points=15
+        base_layer_params, num_points=30
     )
 
     # Plot results

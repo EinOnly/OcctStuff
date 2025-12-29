@@ -157,7 +157,17 @@ class Plate:
         self.logger = logger
         self.points = None
 
-    def make(self, map=None, num_relaxations=6, canvas=None, point=None, offset=False, transform=None, times=1):
+    def make(
+            self, 
+            map=None, 
+            num_relaxations=6, 
+            canvas=None, 
+            point=None, 
+            offset=False, 
+            transform=None, 
+            times=1,
+            move = 1
+        ):
         '''
         Generate all plate-related geometry including:
         - the bottom face with fillets and holes,
@@ -167,10 +177,11 @@ class Plate:
         - chamfering of cell top and bottom edges.
         '''
 
-        bounds = [self.cell_region_offset, 
-                  self.bottom_width - self.cell_region_offset, 
-                  self.cell_region_offset, 
-                  self.bottom_height - self.cell_region_offset
+        bounds = [
+            self.cell_region_offset, 
+            self.bottom_width - self.cell_region_offset, 
+            self.cell_region_offset, 
+            self.bottom_height - self.cell_region_offset
         ]
         
         # 1. Generate the density map
@@ -182,7 +193,7 @@ class Plate:
             self.points = Points(shape=self.valid_region_edge, spacing=3.0, offset_layers=1, logger=self.logger)
 
             # 3. Move points by density
-            move_times = 50
+            move_times = move
             self.logger.warn(f"Moving points by density: {move_times} times...")
             self.points.move(density, dt=0.1, mask_extent=(0, self.bottom_width, 0, self.bottom_height), iterations=move_times)
 

@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 from dataclasses import dataclass
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add parent directory to path (sources/motor/)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pattern import Pattern
-from settings import layers_c
+from settings import layers
 
 
 @dataclass
@@ -281,8 +281,8 @@ def main():
     print("=" * 80)
 
     # Load base configuration
-    normal_layer_config = layers_c["layers"][1]
-    global_settings = layers_c["global"]
+    normal_layer_config = layers["layers"][1]
+    global_settings = layers["global"]
 
     base_params = normal_layer_config["layer"].copy()
     base_params["pattern_psp"] = global_settings["layer_psp"]
