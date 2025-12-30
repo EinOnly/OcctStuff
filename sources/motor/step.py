@@ -481,21 +481,22 @@ class StepExporter:
                     print(f"    Using face center of mass: ({x_com:.3f}, {y_com:.3f}, {z_com:.3f})")
 
             # For a spiral surface, the radial direction at any point is
-            # perpendicular to the Z-axis and points toward/away from Z-axis
-            # Radial direction in XY plane: normalize(x, y, 0)
+            # perpendicular to the Y-axis (vertical) and points toward/away from Y-axis
+            # Spiral is in XZ plane, Y is vertical
+            # Radial direction in XZ plane: normalize(x, 0, z)
 
-            # Calculate radial direction (in XY plane, away from Z-axis)
-            radial_length = np.sqrt(x_com**2 + y_com**2)
+            # Calculate radial direction (in XZ plane, away from Y-axis)
+            radial_length = np.sqrt(x_com**2 + z_com**2)
             if radial_length < 1e-6:
-                # Face is on Z-axis, use X direction
+                # Face is on Y-axis, use X direction
                 radial_dir = gp_Vec(1.0, 0.0, 0.0)
             else:
-                # Normalized radial direction
-                radial_dir = gp_Vec(x_com / radial_length, y_com / radial_length, 0.0)
+                # Normalized radial direction in XZ plane
+                radial_dir = gp_Vec(x_com / radial_length, 0.0, z_com / radial_length)
 
             # Determine extrusion direction
-            # For outer layers: extrude outward (away from Z-axis)
-            # For inner layers: extrude inward (toward Z-axis)
+            # For outer layers: extrude outward (away from Y-axis)
+            # For inner layers: extrude inward (toward Y-axis)
             sign = 1.0 if outward else -1.0
             extrusion_vec = gp_Vec(
                 radial_dir.X() * thickness * sign,
