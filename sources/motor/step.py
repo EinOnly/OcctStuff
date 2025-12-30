@@ -269,17 +269,17 @@ class StepExporter:
             if shape_curve is None or len(shape_curve) < 3:
                 continue
 
-            # Get this pattern's local X bounds
+            # Get this pattern's absolute X position (use original coordinates)
             pattern_x_coords = [pt[0] for pt in shape_curve]
             pattern_x_min = min(pattern_x_coords)
             pattern_x_max = max(pattern_x_coords)
             pattern_x_span = pattern_x_max - pattern_x_min
 
-            # Normalize pattern to start at 0
-            pattern_2d_raw = [(pt[0] - pattern_x_min, pt[1]) for pt in shape_curve]
+            # Keep pattern at ABSOLUTE position - use global_x_min as reference
+            # This preserves the original spacing and position of patterns
+            pattern_2d_raw = [(pt[0] - global_x_min, pt[1]) for pt in shape_curve]
 
             # Resample pattern with high point density for smooth boundaries
-            # Higher point count creates smoother trimmed edges
             pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=200)
 
             # Debug: Check pattern bounds
@@ -289,28 +289,18 @@ class StepExporter:
                 print(f"\nFront pattern {idx}:")
                 print(f"  Original X: [{pattern_x_min:.3f}, {pattern_x_max:.3f}]")
                 print(f"  Pattern X span: {pattern_x_span:.3f} mm")
-                print(f"  Normalized X range: [{min(x_coords):.3f}, {max(x_coords):.3f}]")
+                print(f"  Offset from global min: {pattern_x_min - global_x_min:.3f} mm")
+                print(f"  Mapped X range: [{min(x_coords):.3f}, {max(x_coords):.3f}]")
                 print(f"  Y range: [{min(y_coords):.3f}, {max(y_coords):.3f}]")
                 print(f"  Points: {len(pattern_2d_resampled)}")
 
-            # Determine which physical layer this pattern belongs to
-            layer_idx = idx // (num_patterns // num_physical_layers)
-
-            # Calculate position within this physical layer
-            patterns_per_layer = num_patterns // num_physical_layers
-            pattern_idx_in_layer = idx % patterns_per_layer
-
-            # Distribute patterns evenly within each physical layer
-            arc_per_layer = self.spiral.total_length / num_physical_layers
-            layer_start = layer_idx * arc_per_layer
-
-            # Position this pattern within its layer
-            pattern_position = layer_start + (pattern_idx_in_layer / patterns_per_layer) * arc_per_layer
+            # Use pattern's absolute X position as arc position on spiral
+            # The pattern's X coordinate directly maps to arc length
+            pattern_position = 0.0  # All patterns start from beginning of spiral
 
             if idx == 0:
-                print(f"  Layer {layer_idx}, pattern {pattern_idx_in_layer}/{patterns_per_layer}")
-                print(f"  Arc position: {pattern_position:.3f} mm")
-                print(f"  Arc per layer: {arc_per_layer:.3f} mm")
+                print(f"  Using absolute X coordinates as arc length")
+                print(f"  Pattern starts at arc position: {pattern_position:.3f} mm")
 
             # Create 3D shape from wrapped pattern
             # Pass 2D pattern data to create surface-based solid
@@ -347,29 +337,18 @@ class StepExporter:
             if shape_curve is None or len(shape_curve) < 3:
                 continue
 
-            # Get this pattern's local X bounds
+            # Get this pattern's absolute X position
             pattern_x_coords = [pt[0] for pt in shape_curve]
             pattern_x_min = min(pattern_x_coords)
 
-            # Normalize pattern to start at 0
-            pattern_2d_raw = [(pt[0] - pattern_x_min, pt[1]) for pt in shape_curve]
+            # Keep pattern at ABSOLUTE position - use global_x_min as reference
+            pattern_2d_raw = [(pt[0] - global_x_min, pt[1]) for pt in shape_curve]
 
             # Resample pattern with high point density for smooth boundaries
             pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=200)
 
-            # Determine which physical layer this pattern belongs to
-            layer_idx = idx // (num_patterns // num_physical_layers)
-
-            # Calculate position within this physical layer
-            patterns_per_layer = num_patterns // num_physical_layers
-            pattern_idx_in_layer = idx % patterns_per_layer
-
-            # Distribute patterns evenly within each physical layer
-            arc_per_layer = self.spiral.total_length / num_physical_layers
-            layer_start = layer_idx * arc_per_layer
-
-            # Position this pattern within its layer
-            pattern_position = layer_start + (pattern_idx_in_layer / patterns_per_layer) * arc_per_layer
+            # Use pattern's absolute X position as arc position on spiral
+            pattern_position = 0.0  # All patterns start from beginning of spiral
 
             # Create 3D shape from wrapped pattern
             # Pass 2D pattern data to create surface-based solid
