@@ -21,3 +21,6 @@ __pycache__/
 *.bak
 *.tmp
 *.old
+*.dwl
+*.dwl2
+*.DS_Store

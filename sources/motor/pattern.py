@@ -608,7 +608,11 @@ class Pattern(QWidget):
                     # First 8 patterns use modified current params
                     params_current = currentParams.copy()
                     params_current["pattern_twist"] = False
-                    params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    # Shift pattern to the right by adding offset to tp1
+                    # Adjust tp3 to compensate for the increased radius to maintain curve connection
+                    offset = params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    params_current["pattern_tp1"] += offset
+                    params_current["pattern_tp3"] -= offset  # Compensate for radius increase
                     params_next = params_current
                     # Don't render back side for these patterns
                     if side == "back":
@@ -695,7 +699,11 @@ class Pattern(QWidget):
                     # First 8 patterns use modified current params
                     params_current = currentParams.copy()
                     params_current["pattern_twist"] = False
-                    params_current["pattern_tp1"] += params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    # Shift pattern to the right by adding offset to tp1
+                    # Adjust tp3 to compensate for the increased radius to maintain curve connection
+                    offset = params_current["pattern_ppw"] + params_current["pattern_psp"]
+                    params_current["pattern_tp1"] += offset
+                    params_current["pattern_tp3"] -= offset  # Compensate for radius increase
                     params_next = params_current
                     # Don't render back side for these patterns
                     if side == "back":

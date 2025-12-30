@@ -315,6 +315,8 @@ class StepExporter:
             # Create 3D shape from wrapped pattern
             # Pass 2D pattern data to create surface-based solid
             try:
+                if idx == 0:
+                    print(f"  [DEBUG] Creating front pattern with thickness={layer_ptc}")
                 solid = self._create_wrapped_pattern_solid_from_surface(
                     pattern_2d_resampled,
                     pattern_position,
@@ -434,6 +436,97 @@ class StepExporter:
 
         return resampled
 
+    def _extrude_face_along_normal(self, face: TopoDS_Face, thickness: float,
+                                   outward: bool = True, pattern_center_3d: tuple = None,
+                                   debug: bool = False) -> TopoDS_Shape:
+        """
+        Extrude a face along its normal direction to create a solid.
+
+        Args:
+            face: The face to extrude
+            thickness: Extrusion thickness (always positive)
+            outward: If True, extrude outward from surface; if False, extrude inward
+            pattern_center_3d: Optional (x, y, z) tuple of pattern center point for radial direction
+            debug: Enable debug output
+
+        Returns:
+            TopoDS_Shape: Extruded solid
+        """
+        if debug:
+            print(f"  [EXTRUDE] Starting extrusion: thickness={thickness}, outward={outward}")
+        try:
+            from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+            from OCC.Core.gp import gp_Vec
+            from OCC.Core.GProp import GProp_GProps
+            from OCC.Core.BRepGProp import brepgprop
+            import numpy as np
+
+            # Strategy: Extrude in RADIAL direction (away/toward spiral center)
+            # The spiral is centered on the Z-axis, so radial direction is in XY plane
+
+            # Use provided pattern center if available, otherwise use face center of mass
+            if pattern_center_3d is not None:
+                x_com, y_com, z_com = pattern_center_3d
+                if debug:
+                    print(f"    Using provided pattern center: ({x_com:.3f}, {y_com:.3f}, {z_com:.3f})")
+            else:
+                # Get center of mass of the face
+                props_mass = GProp_GProps()
+                brepgprop.SurfaceProperties(face, props_mass)
+                center_of_mass = props_mass.CentreOfMass()
+                x_com = center_of_mass.X()
+                y_com = center_of_mass.Y()
+                z_com = center_of_mass.Z()
+                if debug:
+                    print(f"    Using face center of mass: ({x_com:.3f}, {y_com:.3f}, {z_com:.3f})")
+
+            # For a spiral surface, the radial direction at any point is
+            # perpendicular to the Z-axis and points toward/away from Z-axis
+            # Radial direction in XY plane: normalize(x, y, 0)
+
+            # Calculate radial direction (in XY plane, away from Z-axis)
+            radial_length = np.sqrt(x_com**2 + y_com**2)
+            if radial_length < 1e-6:
+                # Face is on Z-axis, use X direction
+                radial_dir = gp_Vec(1.0, 0.0, 0.0)
+            else:
+                # Normalized radial direction
+                radial_dir = gp_Vec(x_com / radial_length, y_com / radial_length, 0.0)
+
+            # Determine extrusion direction
+            # For outer layers: extrude outward (away from Z-axis)
+            # For inner layers: extrude inward (toward Z-axis)
+            sign = 1.0 if outward else -1.0
+            extrusion_vec = gp_Vec(
+                radial_dir.X() * thickness * sign,
+                radial_dir.Y() * thickness * sign,
+                radial_dir.Z() * thickness * sign  # Z component is 0
+            )
+
+            if debug:
+                print(f"    Center of mass: ({x_com:.3f}, {y_com:.3f}, {z_com:.3f})")
+                print(f"    Radial direction: ({radial_dir.X():.3f}, {radial_dir.Y():.3f}, {radial_dir.Z():.3f})")
+                print(f"    Extrusion vector: ({extrusion_vec.X():.4f}, {extrusion_vec.Y():.4f}, {extrusion_vec.Z():.4f})")
+
+            # Use prism extrusion to create solid
+            prism = BRepPrimAPI_MakePrism(face, extrusion_vec)
+            if prism.IsDone():
+                solid = prism.Shape()
+                if debug:
+                    print(f"  ✓ Successfully extruded face to solid (thickness={thickness:.4f}, outward={outward})")
+                return solid
+            else:
+                if debug:
+                    print(f"  ✗ Prism extrusion failed")
+                return face
+
+        except Exception as e:
+            if debug:
+                print(f"  ✗ Extrusion failed: {e}")
+                import traceback
+                traceback.print_exc()
+            return face
+
     def _create_wrapped_pattern_solid_from_surface(self, pattern_2d: List[Tuple[float, float]],
                                                   arc_offset: float,
                                                   thickness: float,
@@ -444,15 +537,16 @@ class StepExporter:
         1. Creating spiral surface patch for pattern region
         2. Mapping pattern boundary to 3D
         3. Creating face from boundary (trimmed surface)
+        4. Extruding face along normal to create solid
 
         Args:
             pattern_2d: 2D pattern coordinates (X, Y) - boundary points
             arc_offset: Arc length offset for this pattern on the spiral
-            thickness: Not used in surface-only mode
+            thickness: Copper thickness for extrusion (layer_ptc)
             use_inner: If True, use inner spiral; otherwise outer spiral
 
         Returns:
-            TopoDS_Shape: Trimmed surface or triangulated mesh
+            TopoDS_Shape: Extruded solid or trimmed surface
         """
         if len(pattern_2d) < 3:
             return None
@@ -467,9 +561,27 @@ class StepExporter:
         from OCC.Core.GeomAbs import GeomAbs_C2
         from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 
+        # Calculate pattern center for extrusion direction
+        # Pattern center is at the middle of the pattern in both X and Y
+        y_coords = [pt[1] for pt in pattern_2d]
+        x_coords = [pt[0] for pt in pattern_2d]
+        pattern_y_center = (max(y_coords) + min(y_coords)) / 2.0
+        pattern_x_center = (max(x_coords) + min(x_coords)) / 2.0
+
+        # Get 3D position of pattern center for extrusion direction
+        arc_pos_center = arc_offset + pattern_x_center
+        pt_3d_center = self.spiral.arc_to_xyz(arc_pos_center, use_inner=use_inner)
+        if pt_3d_center:
+            x_center, y_center, z_center = pt_3d_center
+            pattern_center_3d = (x_center, y_center + pattern_y_center, z_center)
+        else:
+            pattern_center_3d = None
+
         # Step 1: Map pattern boundary points to 3D
         if debug:
             print(f"  Step 1: Mapping {len(pattern_2d)} boundary points to 3D...")
+            if pattern_center_3d:
+                print(f"  Pattern center 3D: ({pattern_center_3d[0]:.3f}, {pattern_center_3d[1]:.3f}, {pattern_center_3d[2]:.3f})")
 
         boundary_3d_pts = []
         for x_2d, y_2d in pattern_2d:
@@ -521,10 +633,24 @@ class StepExporter:
         # Add margin to ensure surface is larger than pattern boundary
         x_margin = (x_max - x_min) * 0.2  # 20% margin on each side
         y_margin = (y_max - y_min) * 0.2
-        x_min_surface = x_min - x_margin
+        x_min_surface = max(0.0, x_min - x_margin)  # Don't go below 0
         x_max_surface = x_max + x_margin
         y_min_surface = y_min - y_margin
         y_max_surface = y_max + y_margin
+
+        # Clamp surface to spiral boundaries
+        # arc_pos = arc_offset + x_val, and arc_pos must be <= total_length
+        max_x_allowed = self.spiral.total_length - arc_offset
+        if x_max_surface > max_x_allowed:
+            if debug:
+                print(f"  ⚠ Clamping x_max_surface from {x_max_surface:.3f} to {max_x_allowed:.3f}")
+            x_max_surface = max_x_allowed
+
+        # Ensure we still have valid range after clamping
+        if x_min_surface >= x_max_surface:
+            if debug:
+                print(f"  ✗ Invalid surface X range after clamping: [{x_min_surface:.3f}, {x_max_surface:.3f}]")
+            return None
 
         # Create profile curves at top and bottom of ENLARGED surface
         # Increase for smoother rendering
@@ -550,6 +676,11 @@ class StepExporter:
                     x, y, z = pt_3d
                     pts_array.SetValue(j + 1, gp_Pnt(x, y + y_level, z))
                 else:
+                    if debug:
+                        print(f"  ✗ arc_to_xyz failed at profile {i}, point {j}: arc_pos={arc_pos:.3f}")
+                        print(f"     arc_offset={arc_offset:.3f}, x_val={x_val:.3f}")
+                        print(f"     Spiral total length: {self.spiral.total_length:.3f}")
+                        print(f"     x_min_surface={x_min_surface:.3f}, x_max_surface={x_max_surface:.3f}")
                     return None
 
             # Create B-spline
@@ -558,7 +689,9 @@ class StepExporter:
                 edge = BRepBuilderAPI_MakeEdge(spline).Edge()
                 wire = BRepBuilderAPI_MakeWire(edge).Wire()
                 profile_wires.append(wire)
-            except:
+            except Exception as e:
+                if debug:
+                    print(f"  ✗ Failed to create profile wire {i}: {e}")
                 return None
 
         if len(profile_wires) < 2:
@@ -573,8 +706,12 @@ class StepExporter:
         base_face = None
         try:
             loft = BRepOffsetAPI_ThruSections(False)  # False = surface, not solid
-            for wire in profile_wires:
+            for idx_wire, wire in enumerate(profile_wires):
                 loft.AddWire(wire)
+
+            if debug:
+                print(f"  Added {len(profile_wires)} wires to ThruSections, building...")
+
             loft.Build()
 
             if loft.IsDone():
@@ -668,6 +805,15 @@ class StepExporter:
                                     trimmed_face = face_maker.Face()
                                     if debug:
                                         print(f"  ✓ Successfully created trimmed face")
+                                        print(f"  [DEBUG] thickness={thickness}, will extrude: {thickness > 0}")
+
+                                    # Extrude face if thickness is specified
+                                    if thickness > 0:
+                                        if debug:
+                                            print(f"  [DEBUG] Calling extrusion function...")
+                                        # Inner layers extrude inward, outer layers extrude outward
+                                        outward = not use_inner
+                                        return self._extrude_face_along_normal(trimmed_face, thickness, outward, pattern_center_3d, debug)
                                     return trimmed_face
                                 else:
                                     if debug:
@@ -680,6 +826,11 @@ class StepExporter:
                             # Better to have untrimmed smooth surface than triangulated mesh
                             if debug:
                                 print(f"  ⚠ Returning untrimmed base face (trimming failed)")
+
+                            # Extrude face if thickness is specified
+                            if thickness > 0:
+                                outward = not use_inner
+                                return self._extrude_face_along_normal(base_face, thickness, outward, pattern_center_3d, debug)
                             return base_face
                     except Exception as e:
                         if debug:
@@ -693,6 +844,11 @@ class StepExporter:
         if base_face is not None:
             if debug:
                 print(f"  ⚠ Returning untrimmed base face (no trimming attempted)")
+
+            # Extrude face if thickness is specified
+            if thickness > 0:
+                outward = not use_inner
+                return self._extrude_face_along_normal(base_face, thickness, outward, debug)
             return base_face
 
         # Last resort: Use Delaunay triangulation - creates many triangle faces
