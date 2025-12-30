@@ -879,21 +879,31 @@ class ParametersPanel(QWidget):
         self.btn_psy = QPushButton("Symmetry")
         self.btn_psy.setCheckable(True)
 
+        # Add spiral mode toggle
+        self.btn_spiral_mode = QPushButton("Spiral Mode")
+        self.btn_spiral_mode.setCheckable(True)
+        self.btn_spiral_mode.setChecked(False)
+
         # Create action buttons (non-checkable)
         self.btn_save_step = QPushButton("Save STEP")
         self.btn_refresh_view = QPushButton("Refresh View")
         self.btn_generate_layers = QPushButton("Generate Layers")
 
-        # Create horizontal layout for all 4 buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.btn_pwt)
-        btn_layout.addWidget(self.btn_psy)
-        btn_layout.addWidget(self.btn_save_step)
-        btn_layout.addWidget(self.btn_refresh_view)
-        btn_layout.addWidget(self.btn_generate_layers)
+        # Create horizontal layout for toggle buttons
+        toggle_layout = QHBoxLayout()
+        toggle_layout.addWidget(self.btn_pwt)
+        toggle_layout.addWidget(self.btn_psy)
+        toggle_layout.addWidget(self.btn_spiral_mode)
 
-        # Add button layout spanning full width (no label)
-        g3.addLayout(btn_layout, 6, 0, 1, 4)  # Span all 4 columns
+        # Create horizontal layout for action buttons
+        action_layout = QHBoxLayout()
+        action_layout.addWidget(self.btn_save_step)
+        action_layout.addWidget(self.btn_refresh_view)
+        action_layout.addWidget(self.btn_generate_layers)
+
+        # Add button layouts spanning full width
+        g3.addLayout(toggle_layout, 5, 2, 1, 2)  # Toggles on right side of row 5
+        g3.addLayout(action_layout, 6, 0, 1, 4)  # Actions span all columns
 
         layout.addWidget(gb_layer)
 

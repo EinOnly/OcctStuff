@@ -112,7 +112,7 @@ layers_b = {
         {
             "type": "normal",
             "layer": {
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw": 6.20,
                 "layer_pbh": 7.60,
                 "layer_ppw": 0.530,
@@ -134,7 +134,7 @@ layers_b = {
         {
             "type": "normal",
             "layer": {
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw": 6.04,
                 "layer_pbh": 7.60,
                 "layer_ppw": 0.510,
@@ -156,7 +156,7 @@ layers_b = {
         {
             "type": "normal",
             "layer": {
-                "layer_pdc": 18,
+                "layer_pdc": 54,
                 "layer_pbw": 5.87,
                 "layer_pbh": 7.60,
                 "layer_ppw": 0.50,

@@ -112,6 +112,48 @@ class Application(QMainWindow):
         self.paramsWidget.btn_refresh_view.clicked.connect(self.occtWidget.refresh_view)
         self.paramsWidget.btn_generate_layers.clicked.connect(self.layersWidget.generate_layers)
 
+        # Connect spiral mode toggle
+        def on_spiral_mode_changed(checked):
+            if checked:
+                # Get current layer parameters from parameters panel
+                from parameters import LPARAMS
+
+                # Get spiral parameters (with defaults)
+                radius = 6.2055  # TODO: make this configurable
+                thick = 0.1315   # TODO: make this configurable
+                offset = 0.05    # TODO: make this configurable
+
+                # Get layer parameters from current settings
+                layer_pbh = LPARAMS.get("layer_pbh", 8.0)
+                layer_ppw = LPARAMS.get("layer_ppw", 0.5)
+                layer_ptc = LPARAMS.get("layer_ptc", 0.047)
+
+                # Get actual number of physical layers from loaded configuration
+                params_snapshot = LPARAMS.snapshot()
+                num_physical_layers = len(params_snapshot.get("layers", []))
+
+                # Enable spiral mode
+                self.occtWidget.enable_spiral_mode(
+                    radius=radius,
+                    thick=thick,
+                    offset=offset,
+                    layer_pbh=layer_pbh,
+                    layer_ppw=layer_ppw,
+                    layer_ptc=layer_ptc,
+                    num_physical_layers=num_physical_layers
+                )
+                print(f"Spiral mode enabled: radius={radius}, thick={thick}, offset={offset}")
+                print(f"  Physical layers: {num_physical_layers}")
+                print(f"  Layer params: pbh={layer_pbh}, ppw={layer_ppw}, ptc={layer_ptc}")
+                print(f"  >> Please click 'Refresh View' to rebuild geometry in spiral mode")
+            else:
+                # Disable spiral mode
+                self.occtWidget.use_spiral_mode = False
+                print("Spiral mode disabled")
+                print(f"  >> Please click 'Refresh View' to rebuild geometry in flat mode")
+
+        self.paramsWidget.btn_spiral_mode.toggled.connect(on_spiral_mode_changed)
+
     def _buildPlaceholder(self, title: str, *, top_padding=None) -> QWidget:
         content = QWidget()
         layout = QVBoxLayout(content)
