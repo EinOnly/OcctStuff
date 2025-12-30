@@ -117,20 +117,28 @@ class Application(QMainWindow):
             if checked:
                 # Get current layer parameters from parameters panel
                 from parameters import LPARAMS
+                import math
 
-                # Get spiral parameters (with defaults)
-                radius = 6.2055  # TODO: make this configurable
-                thick = 0.1315   # TODO: make this configurable
-                offset = 0.05    # TODO: make this configurable
+                # Get actual number of physical layers from loaded configuration
+                params_snapshot = LPARAMS.snapshot()
+                num_physical_layers = len(params_snapshot.get("layers", []))
 
                 # Get layer parameters from current settings
                 layer_pbh = LPARAMS.get("layer_pbh", 8.0)
                 layer_ppw = LPARAMS.get("layer_ppw", 0.5)
                 layer_ptc = LPARAMS.get("layer_ptc", 0.047)
+                layer_pdc = LPARAMS.get("layer_pdc", 54)  # patterns per circle
+                layer_psp = LPARAMS.get("layer_psp", 0.1)  # pattern spacing
 
-                # Get actual number of physical layers from loaded configuration
-                params_snapshot = LPARAMS.snapshot()
-                num_physical_layers = len(params_snapshot.get("layers", []))
+                # Auto-calculate radius from first layer's geometry
+                # Formula: circumference = pdc × (ppw + psp)
+                # radius = circumference / (2π)
+                circumference = layer_pdc * (layer_ppw + layer_psp)
+                radius = circumference / (2 * math.pi)
+
+                # Get spiral parameters (with defaults)
+                thick = 0.1315   # TODO: make this configurable
+                offset = 0.05    # TODO: make this configurable
 
                 # Enable spiral mode
                 self.occtWidget.enable_spiral_mode(
@@ -142,7 +150,10 @@ class Application(QMainWindow):
                     layer_ptc=layer_ptc,
                     num_physical_layers=num_physical_layers
                 )
-                print(f"Spiral mode enabled: radius={radius}, thick={thick}, offset={offset}")
+                print(f"Spiral mode enabled:")
+                print(f"  Auto-calculated radius: {radius:.4f} mm (from pdc={layer_pdc}, ppw={layer_ppw}, psp={layer_psp})")
+                print(f"  Circumference: {circumference:.4f} mm")
+                print(f"  Thickness: {thick} mm, Offset: {offset} mm")
                 print(f"  Physical layers: {num_physical_layers}")
                 print(f"  Layer params: pbh={layer_pbh}, ppw={layer_ppw}, ptc={layer_ptc}")
                 print(f"  >> Please click 'Refresh View' to rebuild geometry in spiral mode")

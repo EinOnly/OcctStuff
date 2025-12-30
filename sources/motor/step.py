@@ -278,9 +278,9 @@ class StepExporter:
             # Normalize pattern to start at 0
             pattern_2d_raw = [(pt[0] - pattern_x_min, pt[1]) for pt in shape_curve]
 
-            # Use fewer points for better trimming - too many points cause issues
-            # Use original pattern points or moderate resampling
-            pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=30)
+            # Resample pattern with high point density for smooth boundaries
+            # Higher point count creates smoother trimmed edges
+            pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=200)
 
             # Debug: Check pattern bounds
             if idx == 0:  # Only print for first pattern
@@ -352,8 +352,8 @@ class StepExporter:
             # Normalize pattern to start at 0
             pattern_2d_raw = [(pt[0] - pattern_x_min, pt[1]) for pt in shape_curve]
 
-            # Use fewer points for better trimming - too many points cause issues
-            pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=30)
+            # Resample pattern with high point density for smooth boundaries
+            pattern_2d_resampled = self._resample_pattern_2d(pattern_2d_raw, target_points=200)
 
             # Determine which physical layer this pattern belongs to
             layer_idx = idx // (num_patterns // num_physical_layers)
@@ -527,7 +527,8 @@ class StepExporter:
         y_max_surface = y_max + y_margin
 
         # Create profile curves at top and bottom of ENLARGED surface
-        n_profiles = 5  # Create 5 horizontal slices
+        # Increase for smoother rendering
+        n_profiles = 10  # Create more horizontal slices for smoother surface
         profile_wires = []
 
         for i in range(n_profiles):
@@ -535,7 +536,8 @@ class StepExporter:
             y_level = y_min_surface + v * (y_max_surface - y_min_surface)
 
             # Create points along X at this Y level
-            n_pts = 20
+            # Increase point density for smoother curves
+            n_pts = 50
             pts_array = TColgp_Array1OfPnt(1, n_pts)
 
             for j in range(n_pts):
@@ -1157,6 +1159,28 @@ class StepViewer(QWidget):
         self.viewer = qtViewer3d(self)
         self.viewer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.viewer)
+
+        # Improve rendering quality - set higher tessellation quality
+        # This affects how smooth curves and surfaces are displayed
+        try:
+            # Get the default drawer for the context
+            drawer = self.viewer._display.Context.DefaultDrawer()
+
+            # Set deviation coefficient (lower = higher quality)
+            # Default is 0.001, we use 0.0001 for 10x better quality
+            drawer.SetDeviationCoefficient(0.0001)
+
+            # Set deviation angle (lower = smoother curves)
+            # Default is 0.5 radians, we use 0.1 for smoother curves
+            drawer.SetDeviationAngle(0.1)
+
+            # Set maximum chord length deviation
+            drawer.SetMaximalChordialDeviation(0.01)
+
+            # Update display
+            self.viewer._display.Context.UpdateCurrentViewer()
+        except Exception as e:
+            print(f"Warning: Could not set rendering quality: {e}")
 
         # Enable keyboard focus for shortcuts
         self.setFocusPolicy(Qt.StrongFocus)
