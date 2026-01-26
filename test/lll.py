@@ -1,140 +1,117 @@
-import matplotlib.pyplot as plt
-import networkx as nx
-import numpy as np
-import random
+import math
+import pandas as pd
 
-def draw_perfect_flow_tree():
-    # 1. 设置画布
-    fig, ax = plt.subplots(figsize=(16, 8), facecolor='white')
-    ax.axis('off')
+# ============================================================
+# 全局工程假设（你可以后面系统性调这些）
+# ============================================================
 
-    # --- A. 定义每一层的宽度 (整形核心) ---
-    # 纺锤形结构：起点少 -> 中间展开 -> 结尾收束
-    layer_sizes = [1, 2, 4, 6, 8, 10, 12, 12, 10, 8, 6, 4, 2, 1] 
-    layers = len(layer_sizes)
+PHASES = 3
 
-    G = nx.DiGraph()
-    pos = {}
-    node_lists = {} # 存储每一层的节点ID {层号: [节点列表]}
+# SVPWM 下，相电压 RMS ≈ 0.58~0.61 Vdc
+V_UTIL = 0.60
 
-    # 2. 生成节点并计算坐标
-    for i, size in enumerate(layer_sizes):
-        layer_nodes = []
-        for j in range(size):
-            node_id = f"{i}_{j}"
-            G.add_node(node_id, layer=i)
-            layer_nodes.append(node_id)
-            
-            # 计算坐标
-            # X: 均匀拉开
-            x = i * 2.0
-            # Y: 居中对齐，让结构对称
-            y = (j - (size - 1) / 2.0) * 1.5 
-            pos[node_id] = np.array([x, y])
-            
-        node_lists[i] = layer_nodes
+# -------- 磁链经验模型（关键修正点） --------
+# 在“参考极数”下的结构磁链（经验量级）
+PSI_REF = 0.015      # Wb，典型中等尺寸 PMSM
+P_REF   = 10         # 参考极数（不是极对数）
 
-    # 3. 连线 (构建网状逻辑)
-    for i in range(layers - 1):
-        current_layer = node_lists[i]
-        next_layer = node_lists[i+1]
-        
-        # 3.1 保证连通性：下一层的每个节点，必须连上一个上一层的节点
-        for v_idx, v in enumerate(next_layer):
-            # 找上一层相对位置最近的节点
-            u_idx = int((v_idx / len(next_layer)) * len(current_layer))
-            # 边界保护，防止索引越界
-            u_idx = min(u_idx, len(current_layer) - 1)
-            u = current_layer[u_idx]
-            G.add_edge(u, v)
+# -------- 损耗经验模型（概念设计级） --------
+COPPER_LOSS_COEFF = 0.015   # ∝ I^2
+IRON_LOSS_COEFF   = 0.0008  # ∝ f_e
 
-        # 3.2 增加随机连接 (制造网状感)
-        for u_idx, u in enumerate(current_layer):
-            # 确定下一层的连接范围，只连附近的
-            center_v = (u_idx / len(current_layer)) * len(next_layer)
-            start_v = max(0, int(center_v - 2))
-            end_v = min(len(next_layer), int(center_v + 3))
-            
-            potential_targets = next_layer[start_v:end_v]
-            
-            if potential_targets:
-                num_links = random.choice([1, 2, 2, 3]) 
-                targets = random.sample(potential_targets, min(len(potential_targets), num_links))
-                for v in targets:
-                    if not G.has_edge(u, v):
-                        G.add_edge(u, v)
+# -------- 可枚举的常见槽/极组合 --------
+SLOT_CANDIDATES = [12, 18, 24, 27, 36, 48]
+POLE_CANDIDATES = [8, 10, 14, 16, 20, 22, 24, 28]
 
-    # 4. 激活路径 (Highlighting)
-    start_node = node_lists[0][0]
-    
-    # --- 【修复点在这里】 ---
-    # 之前用的 node_lists[-1][0] 报错了
-    # 改为 node_lists[layers - 1][0]
-    end_node = node_lists[layers - 1][0]
-    
-    active_paths = []
-    
-    try:
-        # 路径1：走上方 (强制经过第6层靠上的节点)
-        mid_top_idx = int(len(node_lists[6]) * 0.8) # 选上方位置
-        mid_top = node_lists[6][mid_top_idx] 
-        path1_a = nx.shortest_path(G, start_node, mid_top)
-        path1_b = nx.shortest_path(G, mid_top, end_node)
-        active_paths.append(path1_a + path1_b[1:])
-        
-        # 路径2：走下方 (强制经过第7层靠下的节点)
-        mid_bot_idx = 1 # 选下方位置
-        mid_bot = node_lists[7][mid_bot_idx] 
-        path2_a = nx.shortest_path(G, start_node, mid_bot)
-        path2_b = nx.shortest_path(G, mid_bot, end_node)
-        active_paths.append(path2_a + path2_b[1:])
-    except Exception as e:
-        print(f"路径生成回退: {e}")
-        # 兜底：如果断路，直接算最短路
-        if nx.has_path(G, start_node, end_node):
-            active_paths.append(nx.shortest_path(G, start_node, end_node))
 
-    # --- B. 绘图 (美化) ---
-    def draw_smooth_curve(u, v, color, lw, alpha, zorder, linestyle='-'):
-        p1 = pos[u]
-        p2 = pos[v]
-        dist = p2[0] - p1[0]
-        # S型贝塞尔曲线
-        cp1 = p1 + np.array([dist * 0.5, 0])
-        cp2 = p2 - np.array([dist * 0.5, 0])
-        t = np.linspace(0, 1, 50)
-        curve = (1-t)**3 * p1[:, None] + 3 * (1-t)**2 * t * cp1[:, None] + \
-                3 * (1-t) * t**2 * cp2[:, None] + t**3 * p2[:, None]
-        ax.plot(curve[0], curve[1], color=color, lw=lw, alpha=alpha, zorder=zorder, linestyle=linestyle)
+# ============================================================
+# 主扫描函数
+# ============================================================
 
-    # 1. 画背景网格
-    for u, v in G.edges():
-        draw_smooth_curve(u, v, color='#DDDDDD', lw=1.2, alpha=0.5, zorder=1)
+def motor_feasibility_scan(
+    inner_rotor: bool,
+    rotor_outer_diameter_mm: float,
+    rated_torque_nm: float,
+    rated_speed_rpm: float,
+    dc_voltage_v: float
+):
+    results = []
 
-    # 2. 画所有节点
-    for n, p in pos.items():
-        ax.add_patch(plt.Circle(p, 0.1, facecolor='white', edgecolor='#CCCCCC', zorder=2))
+    # -------- 基本量 --------
+    omega_m = 2 * math.pi * rated_speed_rpm / 60.0
+    v_phase_max = dc_voltage_v * V_UTIL
 
-    # 3. 画高亮路径
-    colors = ['#FF5733', '#33A1FF'] # 橙红，亮蓝
-    
-    for idx, path in enumerate(active_paths):
-        c = colors[idx % 2]
-        for i in range(len(path) - 1):
-            draw_smooth_curve(path[i], path[i+1], color=c, lw=3.0, alpha=0.8, zorder=3)
-        for n in path:
-            ax.add_patch(plt.Circle(pos[n], 0.2, facecolor=c, edgecolor='white', lw=1.5, zorder=4))
+    for Z in SLOT_CANDIDATES:
+        for P in POLE_CANDIDATES:
+            if P % 2 != 0:
+                continue
 
-    # 4. 标注
-    start_p = pos[start_node]
-    ax.text(start_p[0]-0.6, start_p[1], "Start", fontsize=12, fontweight='bold', color='#333333', va='center', ha='right')
-    
-    end_p = pos[end_node]
-    ax.text(end_p[0]+0.6, end_p[1], "Goal", fontsize=12, fontweight='bold', color='#333333', va='center', ha='left')
+            p = P // 2
 
-    plt.title("Neural Network Style Flow", fontsize=15, color="#555555", pad=20)
-    plt.tight_layout()
-    plt.show()
+            # 每极每相槽数
+            q = Z / (P * PHASES)
 
-if __name__ == "__main__":
-    draw_perfect_flow_tree()
+            # 工程经验：过滤明显不可用拓扑
+            if q < 0.25 or q > 2.5:
+                continue
+
+            # -------- 电频率 --------
+            f_e = p * rated_speed_rpm / 60.0
+            omega_e = 2 * math.pi * f_e
+
+            # ====================================================
+            # 关键修正：磁链不是直接等于电压极限
+            # ====================================================
+
+            # ① 结构可实现磁链（极数越多，单极磁通越小）
+            psi_struct = PSI_REF * (P_REF / P)
+
+            # ② 电压限制磁链（反电动势上限）
+            psi_voltage_limit = v_phase_max / omega_e
+
+            # ③ 实际可用磁链
+            psi = min(psi_struct, psi_voltage_limit)
+
+            # -------- 转矩 → 电流 --------
+            iq = rated_torque_nm / (1.5 * p * psi)
+
+            # -------- 简化损耗模型 --------
+            copper_loss = COPPER_LOSS_COEFF * iq**2
+            iron_loss   = IRON_LOSS_COEFF * f_e
+            total_loss  = copper_loss + iron_loss
+
+            mech_power = rated_torque_nm * omega_m
+            efficiency = mech_power / (mech_power + total_loss)
+
+            results.append({
+                "Slots": Z,
+                "Poles": P,
+                "q": round(q, 3),
+                "ElecFreq_Hz": round(f_e, 1),
+                "Psi_Wb": round(psi, 5),
+                "Iq_est_A": round(iq, 1),
+                "Eff_est": round(efficiency, 3)
+            })
+
+    df = pd.DataFrame(results)
+
+    # 更符合工程直觉的排序方式
+    return df.sort_values(
+        by=["Eff_est", "Iq_est_A", "ElecFreq_Hz"],
+        ascending=[False, True, True]
+    )
+
+
+# ============================================================
+# 测试输入（你的案例）
+# ============================================================
+
+df = motor_feasibility_scan(
+    inner_rotor=True,
+    rotor_outer_diameter_mm=114,
+    rated_torque_nm=5.23,
+    rated_speed_rpm=2400,
+    dc_voltage_v=48
+)
+
+print(df.head(20))

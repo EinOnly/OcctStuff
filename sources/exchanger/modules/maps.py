@@ -148,14 +148,7 @@ if __name__ == "__main__":
         (11.5, 11.5, 6, 'in'),
         (108.5, 43.5, 6, 'out'),
     ]
-    density_map = generate_density_with_circles(
-        size=(120, 55), 
-        res=200, 
-        circles=circles,
-        gradient_direction=(0, -1),
-        gradient_strength=0.2,
-        falloff=120
-    )
+    density_map = generate_density_map()
 
     # Plot the density map
     import matplotlib.pyplot as plt

@@ -133,7 +133,7 @@ class Application(QMainWindow):
                 # Auto-calculate radius from first layer's geometry
                 # Formula: circumference = pdc × (ppw + psp)
                 # radius = circumference / (2π)
-                circumference = layer_pdc * (layer_ppw + layer_psp)
+                circumference = layer_pdc * (layer_ppw + layer_psp) - layer_psp
                 radius = circumference / (2 * math.pi)
 
                 # Get spiral parameters (with defaults)

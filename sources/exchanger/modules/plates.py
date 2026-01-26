@@ -159,7 +159,6 @@ class Plate:
 
     def make(
             self, 
-            map=None, 
             num_relaxations=6, 
             canvas=None, 
             point=None, 
@@ -220,7 +219,8 @@ class Plate:
             density=density, 
             bounds=bounds, 
             mask=self.valid_region_mask, 
-            mask_extent=[0, self.bottom_width, 0, self.bottom_height]
+            mask_extent=[0, self.bottom_width, 0, self.bottom_height],
+            scale_perp=0.9
         )
 
         # 7. Generate the cells all
@@ -700,7 +700,7 @@ class Plate:
             valid_mask=valid_mask,
             circles=circles,
             gradient_direction=(-1, 0),
-            gradient_strength=0.3,
+            gradient_strength=0.58,
             falloff=125.0
         )
 

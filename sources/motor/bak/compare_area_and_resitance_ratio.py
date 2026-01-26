@@ -15,7 +15,7 @@ from pathlib import Path
 # Add parent directory to path (sources/motor/)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pattern import Pattern
-from settings import layers
+from settings import layers_a as layers
 
 
 def find_params_for_target_area(
@@ -422,8 +422,13 @@ def main():
 
     # Plot results
     print("\nPlotting results...")
-    plot_sr_ratio_comparison(areas, straight_sr_ratios, superellipse_sr_ratios,
-                             straight_resistances, superellipse_resistances)
+    plot_sr_ratio_comparison(
+        areas, 
+        straight_sr_ratios, 
+        superellipse_sr_ratios,
+        straight_resistances, 
+        superellipse_resistances
+    )
 
     # Print summary
     print("\n" + "=" * 70)

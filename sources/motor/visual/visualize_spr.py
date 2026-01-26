@@ -23,7 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ============================================================
 # CONFIGURATION - Change these to analyze different setups
@@ -62,6 +62,9 @@ def analyze_with_mode(config_name, layers_config, mode_name, color, marker, samp
     resistances = []
     sr_ratios = []
     sample_labels = []
+    m_values = []  # Store m (tmm) values for superelliptic mode
+    n_values = []  # Store n (tnn) values for superelliptic mode
+    tp3_values = []  # Store tp3 values for straight mode
 
     # Only use the first layer (index 0)
     idx = 0
@@ -145,7 +148,8 @@ def analyze_with_mode(config_name, layers_config, mode_name, color, marker, samp
         # Extract metrics
         area = pattern["convexhull_area"]  # Using convex hull area as envelope
         resistance_ohm = pattern["pattern_resistance"]  # in Ohm
-        resistance_mohm = resistance_ohm * 1000  # Convert to mΩ
+        # Convex hull contains 2 conductor paths, so total resistance = 2 * single path resistance
+        resistance_mohm = resistance_ohm * 1000 * 2  # Convert to mΩ and multiply by 2
 
         # Calculate S/R ratio (mm²/mΩ)
         sr_ratio = area / resistance_mohm if resistance_mohm > 0 else 0
@@ -154,6 +158,13 @@ def analyze_with_mode(config_name, layers_config, mode_name, color, marker, samp
         resistances.append(resistance_mohm)
         sr_ratios.append(sr_ratio)
         sample_labels.append(f"S{sample_idx}")
+
+        # Store parameter values based on mode
+        if mode_name == "superelliptic":
+            m_values.append(sample_val)  # tmm/bmm is the m parameter
+            n_values.append(2.0)  # n is fixed at 2.0 (tnn/bnn)
+        else:  # straight mode
+            tp3_values.append(sample_val)  # tp3/bp3 parameter
 
     print(f"  Generated {sample_count} samples")
     print(f"  Area range: {min(areas):.4f} - {max(areas):.4f} mm²")
@@ -165,6 +176,9 @@ def analyze_with_mode(config_name, layers_config, mode_name, color, marker, samp
         "resistances": resistances,
         "sr_ratios": sr_ratios,
         "sample_labels": sample_labels,
+        "m_values": m_values if mode_name == "superelliptic" else None,
+        "n_values": n_values if mode_name == "superelliptic" else None,
+        "tp3_values": tp3_values if mode_name == "straight" else None,
         "color": color,
         "marker": marker
     }
@@ -207,10 +221,19 @@ def plot_performance(results_list, config_name=""):
         max_idx = np.argmax(results["sr_ratios"])
         max_area = results["areas"][max_idx]
         max_sr = results["sr_ratios"][max_idx]
+
+        # Get parameter values based on mode
+        max_m = results["m_values"][max_idx] if results["m_values"] is not None else None
+        max_n = results["n_values"][max_idx] if results["n_values"] is not None else None
+        max_tp3 = results["tp3_values"][max_idx] if results["tp3_values"] is not None else None
+
         max_points.append({
             "name": results["name"],
             "area": max_area,
             "sr": max_sr,
+            "m": max_m,
+            "n": max_n,
+            "tp3": max_tp3,
             "color": results["color"]
         })
 
@@ -220,7 +243,14 @@ def plot_performance(results_list, config_name=""):
                 markeredgewidth=1.5, zorder=5)
 
         # Add annotation for max point
-        ax.annotate(f'Max: {max_sr:.3f}',
+        if max_m is not None and max_n is not None:
+            annotation_text = f'Max: {max_sr:.3f}\nm={max_m:.2f}, n={max_n:.1f}'
+        elif max_tp3 is not None:
+            annotation_text = f'Max: {max_sr:.3f}\ntp3={max_tp3:.3f}'
+        else:
+            annotation_text = f'Max: {max_sr:.3f}'
+
+        ax.annotate(annotation_text,
                    xy=(max_area, max_sr),
                    xytext=(10, 10), textcoords='offset points',
                    fontsize=10, fontweight='bold',
@@ -287,7 +317,8 @@ def print_summary(results_list):
 
     max_sr_values = []
     for results in results_list:
-        max_sr = max(results['sr_ratios'])
+        max_idx = np.argmax(results['sr_ratios'])
+        max_sr = results['sr_ratios'][max_idx]
         max_sr_values.append(max_sr)
 
         print(f"\n{results['name']}:")
@@ -296,6 +327,16 @@ def print_summary(results_list):
         print(f"  S/R ratio range: {min(results['sr_ratios']):.4f} - {max(results['sr_ratios']):.4f} mm²/mΩ")
         print(f"  Average S/R ratio: {np.mean(results['sr_ratios']):.4f} mm²/mΩ")
         print(f"  Maximum S/R ratio: {max_sr:.4f} mm²/mΩ")
+
+        # Display optimal parameters based on mode
+        if results['m_values'] is not None and results['n_values'] is not None:
+            max_m = results['m_values'][max_idx]
+            max_n = results['n_values'][max_idx]
+            print(f"  Optimal parameters: m={max_m:.2f}, n={max_n:.1f}")
+        elif results['tp3_values'] is not None:
+            max_tp3 = results['tp3_values'][max_idx]
+            print(f"  Optimal parameters: tp3={max_tp3:.3f}")
+
         print(f"  Total samples: {len(results['sr_ratios'])}")
 
     # Calculate and print improvement rate
