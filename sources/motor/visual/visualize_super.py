@@ -10,12 +10,13 @@ import matplotlib.pyplot as plt
 import sys
 import os
 from pathlib import Path
+import csv
 
 # Add parent directory to path (sources/motor/)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pattern import Pattern
-from settings import layers_a as layers
+from settings import layers_c as layers
 from parameters import PParams
 
 
@@ -290,6 +291,7 @@ def visualize_width_measurement(pattern_params: dict, num_arrows: int = 15):
     y_positions = []
     widths = []
     normal_endpoints = []
+    sample_tangents = []
 
     for s in sample_arc_lengths:
         p = interpolate_at_arc_length(inner_top, inner_top_arc_lengths, s)
@@ -298,7 +300,7 @@ def visualize_width_measurement(pattern_params: dict, num_arrows: int = 15):
         # Tangent/normal from the sampled inner_top curve (matches p)
         idx = np.searchsorted(inner_top_arc_lengths, s, side="right") - 1
         idx = max(0, min(idx, len(inner_top) - 1))
-        _, n = tangent_normal(inner_top, idx)
+        t_vec, n = tangent_normal(inner_top, idx)
 
         # Orient normal to the right (+x) since outer lies to the right
         if n[0] < 0:
@@ -313,17 +315,102 @@ def visualize_width_measurement(pattern_params: dict, num_arrows: int = 15):
         y_positions.append(p[1])
         widths.append(t_hit)
         normal_endpoints.append(hit_point)
+        sample_tangents.append(t_vec)
 
     inner_samples = np.array(inner_samples)
     y_positions = np.array(y_positions)
     widths = np.array(widths)
     normal_endpoints = np.array(normal_endpoints)
+    sample_tangents = np.array(sample_tangents)
 
-    # Create figure with 2 subplots
-    fig = plt.figure(figsize=(16, 10))
-    gs = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.3)
+    # Per-sample turning angle (tangent change) along sampled inner_top
+    def sample_turning(tangents: np.ndarray) -> np.ndarray:
+        if len(tangents) < 2:
+            return np.zeros(len(tangents))
+        turns = np.zeros(len(tangents))
+        for i in range(1, len(tangents)):
+            dot = np.clip(np.dot(tangents[i - 1], tangents[i]), -1.0, 1.0)
+            turns[i] = np.degrees(np.arccos(dot))
+        return turns
+
+    sample_orient_deg = np.degrees(np.arctan2(sample_tangents[:, 1], sample_tangents[:, 0]))
+    sample_tilt_deg = 90.0 - sample_orient_deg  # angle vs vertical
+    # Turning angle as successive tilt differences (unwrap to avoid 180/-180 wrap)
+    tilt_rad = np.radians(sample_tilt_deg)
+    tilt_unwrapped = np.unwrap(tilt_rad)
+    sample_turn_deg = np.concatenate([[0.0], np.abs(np.diff(tilt_unwrapped)) * 180.0 / np.pi])
+
+    # Filter out turn_deg==0 after the first non-zero (keep initial vertical block)
+    if len(sample_turn_deg):
+        nonzero_idx = np.nonzero(sample_turn_deg)[0]
+        if len(nonzero_idx):
+            first_nz = nonzero_idx[0]
+            mask = np.ones(len(sample_turn_deg), dtype=bool)
+            mask[first_nz + 1 :] &= sample_turn_deg[first_nz + 1 :] != 0.0
+        else:
+            mask = np.ones(len(sample_turn_deg), dtype=bool)
+    else:
+        mask = np.array([], dtype=bool)
+
+    # Apply mask to data used for export (plots still use full series)
+    inner_samples_csv = inner_samples[mask]
+    widths_csv = widths[mask]
+    normal_endpoints_csv = normal_endpoints[mask]
+    sample_turn_deg_csv = sample_turn_deg[mask]
+    sample_tilt_deg_csv = sample_tilt_deg[mask]
+
+    # ---- Angle change (turning angle) for inner_top and outer ----
+    def turning_angles(points: np.ndarray) -> np.ndarray:
+        """Return per-segment turning angle (radians) between consecutive tangents."""
+        if len(points) < 3:
+            return np.zeros(max(len(points)-1, 0))
+        vecs = points[1:] - points[:-1]
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms < 1e-12] = 1.0
+        tangents = vecs / norms
+        # angle between consecutive tangents
+        dots = np.sum(tangents[1:] * tangents[:-1], axis=1)
+        dots = np.clip(dots, -1.0, 1.0)
+        angles = np.arccos(dots)
+        return angles
+
+    # Use top halves for angle curves to avoid the join between bottom/top introducing spikes
+    outer_angle_curve = top_outer if len(top_outer) >= 3 else outer
+    inner_angle_curve = top_inner if len(top_inner) >= 3 else inner
+
+    # Reverse to follow CCW order if needed (ensure increasing Y -> top direction)
+    if len(outer_angle_curve) > 1 and outer_angle_curve[0, 1] < outer_angle_curve[-1, 1]:
+        outer_angle_curve = outer_angle_curve[::-1]
+    if len(inner_angle_curve) > 1 and inner_angle_curve[0, 1] < inner_angle_curve[-1, 1]:
+        inner_angle_curve = inner_angle_curve[::-1]
+
+    outer_angle_arc = cumulative_lengths(outer_angle_curve)
+    inner_angle_arc = cumulative_lengths(inner_angle_curve)
+
+    outer_angles = turning_angles(outer_angle_curve)
+    inner_angles = turning_angles(inner_angle_curve)
+    outer_angle_pos = outer_angle_arc[1:-1] if len(outer_angle_arc) > 2 else np.array([])
+    inner_angle_pos = inner_angle_arc[1:-1] if len(inner_angle_arc) > 2 else np.array([])
+    # Orientation (tangent vs horizontal) at segment positions
+    def tangent_orientation(curve: np.ndarray, arc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if len(curve) < 2:
+            return np.array([]), np.array([])
+        vecs = curve[1:] - curve[:-1]
+        ang = np.degrees(np.arctan2(vecs[:, 1], vecs[:, 0]))
+        pos = arc[1:]
+        return pos, ang
+
+    outer_orient_pos, outer_orient_deg = tangent_orientation(outer_angle_curve, outer_angle_arc)
+    inner_orient_pos, inner_orient_deg = tangent_orientation(inner_angle_curve, inner_angle_arc)
+    outer_angles_deg = np.degrees(outer_angles)
+    inner_angles_deg = np.degrees(inner_angles)
+
+    # Create figure with 3 subplots (pattern, width, combined angles)
+    fig = plt.figure(figsize=(8, 9.33))  # half width, ~2/3 height of previous 16x14
+    gs = fig.add_gridspec(3, 1, height_ratios=[2, 1, 1], hspace=0.4)
     ax_pattern = fig.add_subplot(gs[0])
     ax_width = fig.add_subplot(gs[1])
+    ax_angles = fig.add_subplot(gs[2])
 
     # ========== TOP PLOT: Pattern with width arrows ==========
     ax_pattern.plot(
@@ -422,6 +509,17 @@ def visualize_width_measurement(pattern_params: dict, num_arrows: int = 15):
             horizontalalignment='right',
             bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
 
+    # ========== ANGLES (all in one plot) ==========
+    ax_angles.plot(outer_orient_pos, outer_orient_deg, 'm-', linewidth=2, label='Outer tangent angle (deg)')
+    ax_angles.plot(inner_orient_pos, inner_orient_deg, 'c-', linewidth=2, label='Inner tangent angle (deg)')
+    ax_angles.plot(outer_angle_pos, outer_angles_deg, 'm--', linewidth=2, label='Outer turning Δ (deg)')
+    ax_angles.plot(inner_angle_pos, inner_angles_deg, 'c--', linewidth=2, label='Inner turning Δ (deg)')
+    ax_angles.set_xlabel('Arc Length (mm)', fontsize=10, fontweight='bold')
+    ax_angles.set_ylabel('Angle (deg)', fontsize=10, fontweight='bold')
+    ax_angles.set_title('Tangents & Turning Angles', fontsize=11, fontweight='bold')
+    ax_angles.grid(True, alpha=0.3)
+    ax_angles.legend(fontsize=9, loc='best')
+
     plt.tight_layout()
 
     # Save figure
@@ -431,7 +529,22 @@ def visualize_width_measurement(pattern_params: dict, num_arrows: int = 15):
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     print(f"Plot saved to: {output_file}")
 
-    return fig, (ax_pattern, ax_width)
+    data = {
+        "mode": mode,
+        "width": {
+            "arc_len": sample_arc_lengths[mask] if len(mask) == len(sample_arc_lengths) else sample_arc_lengths,
+            "inner_x": inner_samples_csv[:, 0],
+            "inner_y": inner_samples_csv[:, 1],
+            "width": widths_csv,
+            "outer_x": normal_endpoints_csv[:, 0],
+            "outer_y": normal_endpoints_csv[:, 1],
+            "tangent_deg": sample_orient_deg[mask],
+            "tilt_deg": sample_tilt_deg_csv,
+            "turn_deg": sample_turn_deg_csv,
+        },
+    }
+
+    return fig, (ax_pattern, ax_width, ax_angles), data
 
 
 def main():
@@ -509,7 +622,7 @@ def main():
         f"  Sum check: tp2+tp3={straight_params['pattern_tp2']+straight_params['pattern_tp3']:.3f} (should be pbh/2={straight_params['pattern_pbh']/2:.3f})"
     )
 
-    visualize_width_measurement(straight_params, num_arrows=20)
+    _, _, straight_data = visualize_width_measurement(straight_params, num_arrows=20)
 
     # Test 2: Superellipse mode (use actual config values with constraints)
     print("\n" + "=" * 70)
@@ -537,7 +650,46 @@ def main():
         f"  Superelliptic check: tp1==tp2? {superellipse_params['pattern_tp1']:.3f}=={superellipse_params['pattern_tp2']:.3f}"
     )
 
-    visualize_width_measurement(superellipse_params, num_arrows=20)
+    _, _, superellipse_data = visualize_width_measurement(superellipse_params, num_arrows=20)
+
+    # Export CSVs for straight and superelliptic modes
+    def export_csv(data: dict, filename: str):
+        headers = [
+            "index",
+            "width_mm",
+            "turn_deg",
+            "tilt_deg",
+            "inner_x_mm",
+            "inner_y_mm",
+            "outer_x_mm",
+            "outer_y_mm",
+        ]
+
+        width = data["width"]
+
+        rows = []
+        for i in range(len(width["width"])):
+            row = [
+                i,
+                width["width"][i],
+                width["turn_deg"][i],
+                width["tilt_deg"][i],
+                width["inner_x"][i],
+                width["inner_y"][i],
+                width["outer_x"][i],
+                width["outer_y"][i],
+            ]
+            rows.append(row)
+
+        out_path = Path.cwd() / filename
+        with out_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            writer.writerows(rows)
+        print(f"CSV exported: {out_path}")
+
+    export_csv(straight_data, "width_data_straight.csv")
+    export_csv(superellipse_data, "width_data_superelliptic.csv")
 
     print("\n" + "=" * 70)
     print("WAITING FOR USER TO CLOSE PLOTS...")
