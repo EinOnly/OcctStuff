@@ -44,6 +44,9 @@ from OCC.Display.qtDisplay import qtViewer3d
 class StepExporter:
     """Generate 3D OCCT shapes from 2D motor pattern curves and export to STEP."""
 
+    # UVW color mapping: u=red, v=green, w=blue
+    UVW_COLORS = {"u": "#FF0000", "v": "#00FF00", "w": "#0000FF"}
+
     def __init__(self, thickness: float = 0.047):
         """
         Initialize STEP exporter.
@@ -54,6 +57,14 @@ class StepExporter:
         self.thickness = thickness
         self.current_shapes = []
         self.spiral = None  # Will hold Spiral instance if using spiral mode
+
+    @staticmethod
+    def _resolve_color(shape_data: Dict[str, Any]) -> str:
+        """Return UVW-based color if available, otherwise fallback to shape color."""
+        uvw = shape_data.get("uvw")
+        if uvw and uvw in StepExporter.UVW_COLORS:
+            return StepExporter.UVW_COLORS[uvw]
+        return shape_data.get("color", "#de7cfc")
 
     def create_shape_from_curve(self, curve_points: List[Tuple[float, float]],
                                 z_offset: float = 0.0) -> TopoDS_Shape:
@@ -131,7 +142,7 @@ class StepExporter:
                 self.current_shapes.append({
                     "shape": solid,
                     "layer": "front",
-                    "color": shape_data.get("color", "#de7cfc")
+                    "color": self._resolve_color(shape_data)
                 })
 
         # Process back layer at z=thickness (offset to avoid overlap)
@@ -146,7 +157,7 @@ class StepExporter:
                 self.current_shapes.append({
                     "shape": solid,
                     "layer": "back",
-                    "color": shape_data.get("color", "#de7cfc")
+                    "color": self._resolve_color(shape_data)
                 })
 
         return compound
@@ -319,7 +330,7 @@ class StepExporter:
                     self.current_shapes.append({
                         "shape": solid,
                         "layer": "front",
-                        "color": shape_data.get("color", "#de7cfc")
+                        "color": self._resolve_color(shape_data)
                     })
                     if idx == 0:  # Debug first pattern only
                         print(f"  ✓ Front pattern {idx} created successfully")
@@ -364,7 +375,7 @@ class StepExporter:
                     self.current_shapes.append({
                         "shape": solid,
                         "layer": "back",
-                        "color": shape_data.get("color", "#de7cfc")
+                        "color": self._resolve_color(shape_data)
                     })
             except Exception as e:
                 print(f"Warning: Failed to create back pattern {idx}: {e}")

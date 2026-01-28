@@ -118,10 +118,12 @@ class Layers(QWidget):
                     "pattern_resistance": pattern.get("pattern_resistance", 0.0),
                 }
                 
+                _uvw_map = {0: "u", 1: "v", 2: "w"}
                 result["front"] = {
                     "shape": shape_offset,
                     "color": color,
                     "index": index,
+                    "uvw": _uvw_map[(index // 3) % 3],
                     "layer_index": layer_index,
                     "layer_label": layer_label,
                     "location": "normal",
@@ -151,10 +153,12 @@ class Layers(QWidget):
                     "pattern_resistance": pattern.get("pattern_resistance", 0.0),
                 }
                 
+                _uvw_map = {0: "u", 1: "v", 2: "w"}
                 result["back"] = {
                     "shape": shape_offset,
                     "color": color,
                     "index": index,
+                    "uvw": _uvw_map[(index // 3) % 3],
                     "layer_index": layer_index,
                     "layer_label": layer_label,
                     "location": "normal",
@@ -186,8 +190,12 @@ class Layers(QWidget):
                     result = future.result()
 
                     if result["front"] is not None:
+                        result["front"]["seq"] = self._front_seq
+                        self._front_seq += 1
                         layers["front"].append(result["front"])
                     if result["back"] is not None:
+                        result["back"]["seq"] = self._back_seq
+                        self._back_seq += 1
                         layers["back"].append(result["back"])
 
                     # Batch progress updates (every 5 patterns)
@@ -202,8 +210,12 @@ class Layers(QWidget):
                 result = Layers._compute_pattern(**task)
 
                 if result["front"] is not None:
+                    result["front"]["seq"] = self._front_seq
+                    self._front_seq += 1
                     layers["front"].append(result["front"])
                 if result["back"] is not None:
+                    result["back"]["seq"] = self._back_seq
+                    self._back_seq += 1
                     layers["back"].append(result["back"])
 
                 # Update progress every 5 patterns to reduce overhead
@@ -617,6 +629,8 @@ class Layers(QWidget):
         2. back
         '''
         layers = { "front": [], "back": []}
+        self._front_seq = 0
+        self._back_seq = 0
         configs = self._params.snapshot().get("layers", [])
 
         # Calculate total number of patterns for progress tracking
